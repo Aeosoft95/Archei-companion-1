@@ -23,8 +23,9 @@ export default function SideMenu({ open, onClose }: { open: boolean; onClose: ()
     { href: '/display-online', label: 'Display Online' },
   ];
   const gm = [
-    { href: '/rooms', label: 'Stanze & Inviti' },   // ⬅️ nuovo
+    { href: '/rooms', label: 'Stanze & Inviti' },
     { href: '/tools/chat', label: 'Chat & Dadi (GM)' },
+    { href: '/tools/clock', label: 'Clock' },           // ⬅️ nuovo
     { href: '/display', label: 'Display Locale' },
   ];
 
