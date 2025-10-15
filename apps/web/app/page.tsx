@@ -1,16 +1,10 @@
 'use client';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { getSession, setSession, clearSession } from '@/lib/session';
+import type { Session } from '@/lib/session';
 
 type Role = 'gm' | 'player';
-
-type Session = {
-  nick: string;
-  role: Role;
-  // placeholder token temporaneo lato client, in futuro lo emetterà il server
-  token: string;
-  createdAt: number;
-};
 
 export default function HomeLogin() {
   const [nick, setNick] = useState('');
@@ -19,14 +13,12 @@ export default function HomeLogin() {
   const [showPwd, setShowPwd] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSessionState] = useState<Session | null>(null);
 
-  // Carica eventuale sessione salvata
+  // Se esiste già una sessione, la carico e mostro subito la vista post-login
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem('archei.session');
-      if (raw) setSession(JSON.parse(raw));
-    } catch {}
+    const s = getSession();
+    if (s) setSessionState(s);
   }, []);
 
   function validate(): string | null {
@@ -39,36 +31,24 @@ export default function HomeLogin() {
   function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     const v = validate();
-    if (v) {
-      setError(v);
-      return;
-    }
+    if (v) { setError(v); return; }
     setError(null);
 
-    // NOTE: per ora generiamo un token lato client (placeholder)
-    // In uno step successivo lo otterremo dal server (WS/HTTP) con verifica reale.
     const token = btoa(`${nick}:${role}:${Date.now()}`);
-    const sess: Session = {
-      nick: nick.trim(),
-      role,
-      token,
-      createdAt: Date.now(),
-    };
-    try {
-      localStorage.setItem('archei.session', JSON.stringify(sess));
-    } catch {}
+    const sess: Session = { nick: nick.trim(), role, token, createdAt: Date.now() };
     setSession(sess);
+    setSessionState(sess);
   }
 
   function logout() {
-    try { localStorage.removeItem('archei.session'); } catch {}
-    setSession(null);
+    clearSession();
+    setSessionState(null);
     setNick('');
     setPassword('');
     setRole('player');
   }
 
-  // UI post-login (provvisorio): mostra link rapidi in base al ruolo
+  // Vista post-login (provvisoria) con link rapidi e link alla dashboard
   if (session) {
     return (
       <div className="grid gap-6">
@@ -76,30 +56,18 @@ export default function HomeLogin() {
           <h1 className="text-2xl font-bold">Benvenuto, {session.nick}</h1>
           <p className="opacity-80">Accesso come <strong>{session.role.toUpperCase()}</strong>.</p>
           <div className="mt-4 flex flex-wrap gap-3">
+            <Link className="underline" href="/dashboard">Vai alla Dashboard</Link>
             {session.role === 'gm' ? (
               <>
-                <Link className="underline" href="/tools/chat">Apri Tool GM (Chat & Dadi)</Link>
+                <Link className="underline" href="/tools/chat">Tool GM (Chat & Dadi)</Link>
                 <Link className="underline" href="/display">Display Locale</Link>
                 <Link className="underline" href="/display-online">Display Online</Link>
                 <Link className="underline" href="/join">Gestione Join</Link>
-                {/* Questi li implementeremo nei prossimi step */}
-                {/* <Link className="underline opacity-60 pointer-events-none" href="#">Clock</Link> */}
-                {/* <Link className="underline opacity-60 pointer-events-none" href="#">Scene</Link> */}
-                {/* <Link className="underline opacity-60 pointer-events-none" href="#">Generatore Mostri</Link> */}
-                {/* <Link className="underline opacity-60 pointer-events-none" href="#">Generatore NPC</Link> */}
-                {/* <Link className="underline opacity-60 pointer-events-none" href="#">Note</Link> */}
-                {/* <Link className="underline opacity-60 pointer-events-none" href="#">Tracker Combattimenti</Link> */}
               </>
             ) : (
               <>
                 <Link className="underline" href="/join">Entra in Stanza (Player)</Link>
                 <Link className="underline" href="/display-online">Apri Display Online</Link>
-                {/* Placeholder in attesa della dashboard Player */}
-                {/* <Link className="underline opacity-60 pointer-events-none" href="#">Scheda</Link> */}
-                {/* <Link className="underline opacity-60 pointer-events-none" href="#">Inventario</Link> */}
-                {/* <Link className="underline opacity-60 pointer-events-none" href="#">Chat</Link> */}
-                {/* <Link className="underline opacity-60 pointer-events-none" href="#">Tiradadi</Link> */}
-                {/* <Link className="underline opacity-60 pointer-events-none" href="#">Note</Link> */}
               </>
             )}
           </div>
@@ -114,14 +82,14 @@ export default function HomeLogin() {
           <h2 className="font-semibold mb-2">Dettagli sessione (temporanei)</h2>
           <pre className="text-xs opacity-80 overflow-auto p-2 bg-neutral-950/40 rounded">{JSON.stringify(session, null, 2)}</pre>
           <p className="text-xs opacity-60 mt-2">
-            Nota: in questo step la password non viene inviata a nessun server. Verrà validata sul backend nei prossimi step.
+            Nota: in questo step la password non viene inviata a nessun server. Nei prossimi step la valideremo lato backend.
           </p>
         </div>
       </div>
     );
   }
 
-  // UI pre-login: form Nick/Password/Ruolo
+  // Vista pre-login
   return (
     <div className="grid gap-6 md:grid-cols-2">
       <div className="card">
@@ -193,8 +161,7 @@ export default function HomeLogin() {
           <li><strong>Player</strong>: Scheda, Inventario, Chat, Tiradadi, Display, Note.</li>
         </ul>
         <p className="text-sm opacity-70 mt-3">
-          In questo step configuriamo solo il login locale (UI e stato). Nei prossimi passi collegheremo il backend per una
-          <em>autenticazione reale</em> e una <em>dashboard</em> differenziata.
+          Ora è solo UI locale; al prossimo step aggiungiamo la verifica reale lato server e la dashboard completa.
         </p>
       </div>
     </div>
