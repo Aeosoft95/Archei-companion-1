@@ -26,3 +26,9 @@ pnpm dev:web     # avvia Next.js su :3000
 - `apps/web` — Next.js App Router + Tailwind
 - `apps/realtime-server` — WS server (ws://, wss://)
 - `packages/shared` — util e tipi condivisi (dice, broadcast, realtime)
+
+## 2) Avvia il WebSocket server (Terminale A)
+## pnpm dev:ws
+
+##3) Avvia il Next.js web (Terminale B)
+## pnpm dev:web
