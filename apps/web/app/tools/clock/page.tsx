@@ -1,11 +1,9 @@
 'use client';
 /**
- * ARCHEI — CLOCKS (GM) — WS mirror + concat semplificate
- * - Sidebar: crea clock + filtro + toggle "Mirror su WS" (URL, room, stato)
- * - Griglia fluida: repeat(auto-fill, minmax(320px, 1fr)) + card full-height
- * - Persistenza localStorage + BroadcastChannel (display locale)
- * - WS mirror (opzionale): DISPLAY_CLOCKS_STATE / DISPLAY_HIGHLIGHT (+ room)
- * - Concat semplificate: relation=after|parallel|gate, ratio, minStep, reveal
+ * ARCHEI — CLOCKS (GM) — WS mirror auto-on + concat semplici + layout fluido
+ * - /display è un redirect a /display-online con ENV
+ * - Questo pannello invia sempre lo stato (se WS valido) e gli highlight
+ * - Salva preferenze WS in localStorage
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -36,7 +34,7 @@ type Clock = {
   notes?: string;
   onComplete?: string;
   drop?: string;
-  concat?: SimpleRule[]; // <— semplificato
+  concat?: SimpleRule[]; // semplificato
 };
 
 /* ---------- Utils ---------- */
@@ -66,7 +64,7 @@ function save(list: Clock[]) {
   try { localStorage.setItem(LS_KEY, JSON.stringify(list)); } catch {}
 }
 
-/* ---------- BroadcastChannel ---------- */
+/* ---------- BroadcastChannel (display locale, per retro-compat) ---------- */
 type DisplayEvent =
   | { t: 'DISPLAY_CLOCKS_STATE'; clocks: Clock[] }
   | { t: 'DISPLAY_HIGHLIGHT'; clockId: string; type: 'advance' | 'complete' };
@@ -86,14 +84,42 @@ function highlightLocal(clockId: string, type: 'advance'|'complete') {
   } catch {}
 }
 
-/* ---------- WS Mirror (opzionale) ---------- */
+/* ---------- WS Mirror (auto-on con default + localStorage) ---------- */
+const LS_WS_ON   = 'archei:ws:on';
+const LS_WS_URL  = 'archei:ws:url';
+const LS_WS_ROOM = 'archei:ws:room';
+
 function useWsMirror() {
-  const [enabled, setEnabled] = useState(false);
-  const [url, setUrl] = useState<string>(process.env.NEXT_PUBLIC_WS_DEFAULT || '');
-  const [room, setRoom] = useState<string>('demo');
-  const [status, setStatus] = useState<'idle'|'connecting'|'open'|'closed'|'error'>('idle');
+  const envUrl  = (process.env.NEXT_PUBLIC_WS_DEFAULT ?? '').trim();
+  const envRoom = (process.env.NEXT_PUBLIC_ROOM_DEFAULT ?? 'demo').trim();
+
+  const lsOn   = typeof window !== 'undefined' ? localStorage.getItem(LS_WS_ON)   : null;
+  const lsUrl  = typeof window !== 'undefined' ? localStorage.getItem(LS_WS_URL)  : null;
+  const lsRoom = typeof window !== 'undefined' ? localStorage.getItem(LS_WS_ROOM) : null;
+
+  const initialUrl  = (lsUrl ?? envUrl);
+  const initialRoom = (lsRoom ?? envRoom);
+  const urlLooksOk  = initialUrl.startsWith('ws://') || initialUrl.startsWith('wss://');
+
+  // Se non abbiamo mai salvato nulla, abilita auto-on solo se l'URL è valido
+  const initialOn = lsOn !== null ? lsOn === '1' : urlLooksOk;
+
+  const [enabled, setEnabled] = useState<boolean>(initialOn);
+  const [url, setUrl] = useState<string>(initialUrl);
+  const [room, setRoom] = useState<string>(initialRoom);
+  const [status, setStatus] = useState<'idle'|'connecting'|'open'|'closed'|'error'>(initialOn ? 'connecting' : 'idle');
   const wsRef = useRef<WebSocket|null>(null);
 
+  // Persist settings
+  useEffect(()=>{
+    try {
+      localStorage.setItem(LS_WS_ON, enabled ? '1' : '0');
+      localStorage.setItem(LS_WS_URL, url);
+      localStorage.setItem(LS_WS_ROOM, room);
+    } catch {}
+  }, [enabled, url, room]);
+
+  // Connect / reconnect
   useEffect(()=>{
     if (!enabled) { try { wsRef.current?.close(); } catch {} setStatus('idle'); return; }
     if (!url || !(url.startsWith('ws://') || url.startsWith('wss://'))) { setStatus('error'); return; }
@@ -113,7 +139,7 @@ function useWsMirror() {
           setTimeout(connect, delay);
         };
         ws.onerror = ()=>{ setStatus('error'); try { ws.close(); } catch {} };
-        ws.onmessage = ()=>{}; // display-only: non riceviamo qui
+        ws.onmessage = ()=>{}; // display-only, qui non riceviamo
       } catch {
         const delay = Math.min(1000 * (2 ** attempt++), 10000);
         setTimeout(connect, delay);
@@ -136,12 +162,9 @@ function useWsMirror() {
 /* ---------- Emoji Picker ---------- */
 const COMMON_EMOJI = ['🕒','⏰','🔥','💀','🩸','🛡️','⚔️','🌙','⭐','🌀','👁️','🧿','📜','⚙️','🔮','🧪','🏴','🧭','🗝️','🕯️','🌩️','🌫️','💥','🪙','🎯','🗡️','🏺','🐍','🪄','👑'];
 
-function EmojiPicker({
-  value, onPick, align = 'left'
-}: { value?: string; onPick: (e: string)=>void; align?: 'left'|'right' }) {
+function EmojiPicker({ value, onPick, align = 'left' }:{ value?: string; onPick: (e: string)=>void; align?: 'left'|'right' }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement|null>(null);
-
   useEffect(()=>{
     const onDoc = (e: MouseEvent)=>{
       if (!ref.current) return;
@@ -150,27 +173,16 @@ function EmojiPicker({
     document.addEventListener('mousedown', onDoc);
     return ()=> document.removeEventListener('mousedown', onDoc);
   }, []);
-
   return (
     <div className="relative" ref={ref}>
-      <button
-        type="button"
-        className="px-2 py-1 rounded bg-neutral-800 hover:bg-neutral-700"
-        onClick={()=>setOpen(o=>!o)}
-        title="Scegli emoji"
-      >
+      <button type="button" className="px-2 py-1 rounded bg-neutral-800 hover:bg-neutral-700" onClick={()=>setOpen(o=>!o)} title="Scegli emoji">
         {value || '😀'}
       </button>
       {open && (
         <div className={`absolute z-20 mt-2 w-64 rounded-xl border border-neutral-700 bg-neutral-900 p-2 shadow-lg ${align==='right' ? 'right-0' : 'left-0'}`}>
           <div className="grid grid-cols-8 gap-1 text-xl">
             {COMMON_EMOJI.map(em => (
-              <button
-                key={em}
-                className="px-1 py-1 rounded hover:bg-neutral-800"
-                onClick={()=>{ onPick(em); setOpen(false); }}
-                title={em}
-              >
+              <button key={em} className="px-1 py-1 rounded hover:bg-neutral-800" onClick={()=>{ onPick(em); setOpen(false); }} title={em}>
                 {em}
               </button>
             ))}
@@ -183,8 +195,7 @@ function EmojiPicker({
 
 /* ---------- Ring (SVG) ---------- */
 function RingClock({ segments, filled, color, onClick, onShiftClick, label }:{
-  segments:number; filled:number; color?:string;
-  onClick?:()=>void; onShiftClick?:()=>void; label?:string;
+  segments:number; filled:number; color?:string; onClick?:()=>void; onShiftClick?:()=>void; label?:string;
 }) {
   const size = 132, r = 50, stroke = 10;
   const cx = size/2, cy = size/2;
@@ -192,7 +203,6 @@ function RingClock({ segments, filled, color, onClick, onShiftClick, label }:{
   const gap = Math.max(2, 14 / Math.max(segments, 4));
   const per = full / segments;
   const span = Math.max(6, per - gap);
-
   const arcs: { s:number; e:number; on:boolean }[] = [];
   let start = -90;
   for (let i=0;i<segments;i++){
@@ -205,28 +215,14 @@ function RingClock({ segments, filled, color, onClick, onShiftClick, label }:{
     const rad = a*Math.PI/180;
     return [cx + r*Math.cos(rad), cy + r*Math.sin(rad)];
   };
-
   return (
-    <svg
-      width={size} height={size}
-      className="cursor-pointer block"
-      aria-label={label||'Clock'}
-      onClick={(e)=> e.shiftKey ? onShiftClick?.() : onClick?.()}
-    >
+    <svg width={size} height={size} className="cursor-pointer block" aria-label={label||'Clock'} onClick={(e)=> e.shiftKey ? onShiftClick?.() : onClick?.()}>
       <circle cx={cx} cy={cy} r={r} fill="none" stroke="#2a2a2a" strokeWidth={stroke} />
       {arcs.map((a, i)=>{
-        const [x1,y1] = polar(a.s);
-        const [x2,y2] = polar(a.e);
+        const [x1,y1] = polar(a.s); const [x2,y2] = polar(a.e);
         const largeArc = (a.e-a.s)>180 ? 1 : 0;
         return (
-          <path
-            key={i}
-            d={`M ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2}`}
-            stroke={a.on ? (color||'#7dd3fc') : '#3a3a3a'}
-            strokeWidth={stroke}
-            fill="none"
-            strokeLinecap="round"
-          />
+          <path key={i} d={`M ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2}`} stroke={a.on ? (color||'#7dd3fc') : '#3a3a3a'} strokeWidth={stroke} fill="none" strokeLinecap="round" />
         );
       })}
       <text x={cx} y={cy+6} textAnchor="middle" className="fill-neutral-200" style={{ fontSize: 18, fontWeight: 700 }}>
@@ -250,32 +246,23 @@ export default function Page(){
   );
 }
 
-/* ---------- Concat Editor (SEMPLICE) ---------- */
-function ConcatEditor({
-  clock, allClocks, onChange
-}: { clock: Clock; allClocks: Clock[]; onChange: (rules: SimpleRule[]) => void }) {
+/* ---------- Concat Editor (semplice) ---------- */
+function ConcatEditor({ clock, allClocks, onChange }:{ clock: Clock; allClocks: Clock[]; onChange: (rules: SimpleRule[]) => void }) {
   const rules = clock.concat ?? [];
   const options = allClocks.filter(c => c.id !== clock.id);
-
-  function updateRule(i: number, patch: Partial<SimpleRule>){
-    const next = rules.slice(); next[i] = { ...next[i], ...patch }; onChange(next);
-  }
+  function updateRule(i: number, patch: Partial<SimpleRule>){ const next = rules.slice(); next[i] = { ...next[i], ...patch }; onChange(next); }
   function addRule(){ onChange([...(rules||[]), { relation:'parallel', targets:[], ratio:1, minStep:0, reveal:false }]); }
   function removeRule(i: number){ const next = rules.slice(); next.splice(i,1); onChange(next); }
-
   return (
     <div className="rounded-xl border border-neutral-800 p-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="font-semibold">Concatenazioni (semplici)</div>
         <button className="px-2 py-1 rounded bg-neutral-800" onClick={addRule}>+ Regola</button>
       </div>
-
       {rules.length === 0 && <div className="text-sm opacity-70 mt-2">Nessuna regola.</div>}
-
       <div className="mt-3 grid gap-4">
         {rules.map((r, i)=>(
           <div key={i} className="rounded-lg bg-neutral-900/60 p-3 grid gap-3">
-            {/* Riga 1 */}
             <div className="grid md:grid-cols-2 gap-3">
               <label className="flex items-center gap-2 min-w-0">
                 <span className="w-28 text-sm shrink-0">Relation</span>
@@ -290,8 +277,6 @@ function ConcatEditor({
                 <input type="checkbox" checked={!!r.reveal} onChange={e=>updateRule(i, { reveal: e.target.checked })}/>
               </label>
             </div>
-
-            {/* Riga 2 */}
             <div className="grid md:grid-cols-2 gap-3">
               <label className="flex items-center gap-2 min-w-0">
                 <span className="w-28 text-sm shrink-0">Ratio</span>
@@ -302,8 +287,6 @@ function ConcatEditor({
                 <input type="number" min={0} value={r.minStep ?? 0} onChange={e=>updateRule(i, { minStep: parseInt(e.target.value||'0') })} className="flex-1 px-2 py-2 bg-neutral-800 rounded min-w-0" />
               </label>
             </div>
-
-            {/* Targets */}
             <div>
               <div className="text-xs opacity-80 mb-2">Targets</div>
               <div className="flex flex-wrap gap-2">
@@ -311,9 +294,7 @@ function ConcatEditor({
                   const on = (r.targets||[]).includes(o.id);
                   return (
                     <label key={o.id} className={`px-2 py-1 rounded border cursor-pointer break-words ${on ? 'border-emerald-500' : 'border-neutral-700'}`}>
-                      <input
-                        type="checkbox" className="mr-1"
-                        checked={on}
+                      <input type="checkbox" className="mr-1" checked={on}
                         onChange={(e)=>{
                           const set = new Set(r.targets||[]);
                           if (e.target.checked) set.add(o.id); else set.delete(o.id);
@@ -326,16 +307,12 @@ function ConcatEditor({
                 })}
               </div>
             </div>
-
             <div className="text-xs opacity-70">
               <b>parallel</b>: su <i>advance</i> trasferisce <code>round(delta*ratio)</code> (se &lt;1 ma &gt;0 usa <code>minStep</code>).<br/>
               <b>after</b>: su <i>complete</i> applica boost = <code>round(segmentsTarget*ratio)</code> (o <code>minStep</code> se &gt;0).<br/>
               <b>gate</b>: come <i>after</i> ma prima sblocca/mostra il target (se <code>reveal</code>).
             </div>
-
-            <div className="text-right">
-              <button className="px-2 py-1 rounded bg-neutral-800" onClick={()=>removeRule(i)}>Rimuovi</button>
-            </div>
+            <div className="text-right"><button className="px-2 py-1 rounded bg-neutral-800" onClick={()=>removeRule(i)}>Rimuovi</button></div>
           </div>
         ))}
       </div>
@@ -348,8 +325,6 @@ function ClockWithSidebar(){
   const [clocks, setClocks] = useState<Clock[]>([]);
   const [search, setSearch] = useState('');
   const typeOptions: ClockType[] = ['Evento','Missione','Campagna','Corruzione','Legame','Personalizzato'];
-
-  // WS mirror hook
   const ws = useWsMirror();
 
   const inited = useRef(false);
@@ -364,7 +339,7 @@ function ClockWithSidebar(){
         validate({ id: uuid(), name: 'Ondata di Ombre', type:'Evento', segments: 8, filled: 0, visible: false, color: '#fca5a5', icon:'💀' }),
       ]);
     }
-    // broadcast iniziale
+    // broadcast iniziale (locale + WS se attivo)
     setTimeout(()=>{
       const snapshot = load();
       broadcastLocal(snapshot);
@@ -373,13 +348,13 @@ function ClockWithSidebar(){
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Persist + broadcast su ogni modifica
+  // Persist + broadcast su ogni modifica (e quando abiliti WS)
   useEffect(()=>{
     const next = clocks.map(validate);
     save(next);
     broadcastLocal(next);
     if (ws.enabled) ws.send({ t:'DISPLAY_CLOCKS_STATE', clocks: next.filter(c=>c.visible) });
-  }, [clocks, ws.enabled]); // se abiliti WS dopo, invia stato corrente
+  }, [clocks, ws.enabled]);
 
   /* --- helpers --- */
   const applyDelta = (id: string, delta: number) => {
@@ -489,22 +464,12 @@ function ClockWithSidebar(){
       <aside className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-3 sticky top-20 h-fit">
         <div className="text-sm uppercase tracking-wide opacity-70 mb-2">Nuovo Clock</div>
         <div className="grid gap-2">
-          <input
-            value={nName} onChange={e=>setNName(e.target.value)}
-            placeholder="Nome"
-            className="px-2 py-2 bg-neutral-800 rounded"
-          />
+          <input value={nName} onChange={e=>setNName(e.target.value)} placeholder="Nome" className="px-2 py-2 bg-neutral-800 rounded" />
           <div className="grid grid-cols-2 gap-2">
             <select value={nType} onChange={e=>setNType(e.target.value as ClockType)} className="px-2 py-2 bg-neutral-800 rounded">
               {typeOptions.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
-            <input
-              type="number" min={2} max={48}
-              value={nSeg} onChange={e=>setNSeg(parseInt(e.target.value||'6'))}
-              className="px-2 py-2 bg-neutral-800 rounded"
-              aria-label="Segmenti"
-              title="Segmenti"
-            />
+            <input type="number" min={2} max={48} value={nSeg} onChange={e=>setNSeg(parseInt(e.target.value||'6'))} className="px-2 py-2 bg-neutral-800 rounded" aria-label="Segmenti" title="Segmenti" />
           </div>
           <div className="flex items-center gap-2">
             <input type="color" value={nCol} onChange={e=>setNCol(e.target.value)} className="h-9 w-12 bg-neutral-800 rounded" />
@@ -519,17 +484,8 @@ function ClockWithSidebar(){
         <hr className="my-4 border-neutral-800" />
 
         <div className="grid gap-2">
-          <input
-            value={search} onChange={e=>setSearch(e.target.value)}
-            placeholder="Cerca nome/tag…"
-            className="px-2 py-2 bg-neutral-800 rounded"
-          />
-          <button
-            className="px-3 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-sm"
-            onClick={()=>setSearch('')}
-          >
-            Azzera filtro
-          </button>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Cerca nome/tag…" className="px-2 py-2 bg-neutral-800 rounded" />
+          <button className="px-3 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-sm" onClick={()=>setSearch('')}>Azzera filtro</button>
         </div>
 
         <hr className="my-4 border-neutral-800" />
@@ -541,25 +497,15 @@ function ClockWithSidebar(){
             <input type="checkbox" checked={ws.enabled} onChange={e=>ws.setEnabled(e.target.checked)} />
           </label>
 
-          {ws.enabled && (
+          {(
             <>
               <label className="grid gap-1">
                 <span className="text-xs opacity-70">WS URL</span>
-                <input
-                  value={ws.url}
-                  onChange={e=>ws.setUrl(e.target.value)}
-                  placeholder="wss://... o ws://localhost:8787"
-                  className="px-2 py-2 bg-neutral-800 rounded"
-                />
+                <input value={ws.url} onChange={e=>ws.setUrl(e.target.value)} placeholder="wss://... o ws://localhost:8787" className="px-2 py-2 bg-neutral-800 rounded" />
               </label>
               <label className="grid gap-1">
                 <span className="text-xs opacity-70">Room</span>
-                <input
-                  value={ws.room}
-                  onChange={e=>ws.setRoom(e.target.value)}
-                  placeholder="demo"
-                  className="px-2 py-2 bg-neutral-800 rounded"
-                />
+                <input value={ws.room} onChange={e=>ws.setRoom(e.target.value)} placeholder="demo" className="px-2 py-2 bg-neutral-800 rounded" />
               </label>
               <div className="text-xs px-2 py-1 rounded bg-neutral-800 border border-neutral-700 w-fit">
                 {ws.status==='open' ? '🟢 Connesso'
@@ -572,7 +518,7 @@ function ClockWithSidebar(){
         </div>
       </aside>
 
-      {/* Colonna destra — Lista */}
+      {/* Colonna destra — Lista (griglia fluida + card full-height) */}
       <section className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(320px,1fr))]">
         {filtered.map(c=>(
           <div key={c.id} className="h-full">
@@ -586,7 +532,6 @@ function ClockWithSidebar(){
             />
           </div>
         ))}
-
         {filtered.length === 0 && (
           <div className="text-sm opacity-70 p-6 border border-neutral-800 rounded-2xl">
             Nessun clock. Crea il primo dalla colonna a sinistra.
@@ -598,70 +543,37 @@ function ClockWithSidebar(){
 }
 
 /* ---------- Card del Clock + Dettagli ---------- */
-function ClockCard({
-  clock, allClocks, onDelta, onUpdate, onToggleVis, onRemove
-}: {
-  clock: Clock;
-  allClocks: Clock[];
-  onDelta: (d:number)=>void;
-  onUpdate: (p: Partial<Clock>)=>void;
-  onToggleVis: ()=>void;
-  onRemove: ()=>void;
+function ClockCard({ clock, allClocks, onDelta, onUpdate, onToggleVis, onRemove }:{
+  clock: Clock; allClocks: Clock[]; onDelta: (d:number)=>void; onUpdate: (p: Partial<Clock>)=>void; onToggleVis: ()=>void; onRemove: ()=>void;
 }) {
   const [open, setOpen] = useState(false);
-
   return (
     <div className="rounded-2xl border border-neutral-800 p-3 bg-neutral-900/40 flex flex-col h-full">
-      {/* Header */}
       <div className="flex items-center gap-2 flex-wrap">
         <EmojiPicker value={clock.icon || '🕒'} onPick={(em)=>onUpdate({ icon: em })} />
-        <input
-          className="flex-1 min-w-0 bg-transparent font-semibold px-2 py-1 rounded hover:bg-neutral-800/50"
-          value={clock.name}
-          onChange={e=> onUpdate({ name: e.target.value })}
-        />
-        <button onClick={onToggleVis} className="px-2 py-1 rounded hover:bg-neutral-800" title="Visibile sul display">
-          {clock.visible ? '👁️' : '🙈'}
-        </button>
+        <input className="flex-1 min-w-0 bg-transparent font-semibold px-2 py-1 rounded hover:bg-neutral-800/50" value={clock.name} onChange={e=> onUpdate({ name: e.target.value })} />
+        <button onClick={onToggleVis} className="px-2 py-1 rounded hover:bg-neutral-800" title="Visibile sul display">{clock.visible ? '👁️' : '🙈'}</button>
         <button onClick={onRemove} className="px-2 py-1 rounded hover:bg-neutral-800" title="Elimina">✕</button>
       </div>
 
-      {/* Body */}
       <div className="mt-3 grid gap-3 items-start md:grid-cols-[auto,1fr]">
         <div className="justify-self-center md:justify-self-start">
-          <RingClock
-            segments={clock.segments}
-            filled={clock.filled}
-            color={clock.color}
-            label={clock.name}
-            onClick={()=>onDelta(+1)}
-            onShiftClick={()=>onDelta(-1)}
-          />
+          <RingClock segments={clock.segments} filled={clock.filled} color={clock.color} label={clock.name} onClick={()=>onDelta(+1)} onShiftClick={()=>onDelta(-1)} />
         </div>
         <div className="grid gap-2 min-w-0">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <label className="flex items-center gap-2 min-w-0">
               <span className="w-20 text-sm shrink-0">Segmenti</span>
-              <input
-                type="number" min={2} max={48}
-                value={clock.segments}
-                onChange={e=>{
-                  const seg = clamp(parseInt(e.target.value||'6'), 2, 48);
-                  onUpdate({ segments: seg, filled: Math.min(clock.filled, seg) });
-                }}
-                className="w-[120px] px-2 py-1 bg-neutral-800 rounded"
-              />
+              <input type="number" min={2} max={48} value={clock.segments} onChange={e=>{
+                const seg = clamp(parseInt(e.target.value||'6'), 2, 48);
+                onUpdate({ segments: seg, filled: Math.min(clock.filled, seg) });
+              }} className="w-[120px] px-2 py-1 bg-neutral-800 rounded" />
             </label>
             <label className="flex items-center gap-2 min-w-0">
               <span className="w-16 text-sm shrink-0">Colore</span>
-              <input
-                type="color" value={clock.color || '#94a3b8'}
-                onChange={e=> onUpdate({ color: e.target.value })}
-                className="h-9 w-12 bg-neutral-800 rounded"
-              />
+              <input type="color" value={clock.color || '#94a3b8'} onChange={e=> onUpdate({ color: e.target.value })} className="h-9 w-12 bg-neutral-800 rounded" />
             </label>
           </div>
-
           <div className="grid grid-cols-4 gap-2">
             <button className="px-2 py-1 rounded bg-neutral-700" onClick={()=>onDelta(+1)}>+1</button>
             <button className="px-2 py-1 rounded bg-neutral-700" onClick={()=>onDelta(+2)}>+2</button>
@@ -671,77 +583,41 @@ function ClockCard({
         </div>
       </div>
 
-      {/* Dettagli */}
       <div className="mt-3 pt-2 border-t border-neutral-800">
-        <button
-          className="text-sm opacity-80 hover:opacity-100 px-2 py-1 rounded hover:bg-neutral-800"
-          onClick={()=>setOpen(o=>!o)}
-        >
+        <button className="text-sm opacity-80 hover:opacity-100 px-2 py-1 rounded hover:bg-neutral-800" onClick={()=>setOpen(o=>!o)}>
           {open ? 'Nascondi dettagli ▲' : 'Dettagli ▼'}
         </button>
-
         {open && (
           <div className="mt-3 grid gap-3">
             <div className="grid sm:grid-cols-2 gap-2">
               <label className="flex items-center gap-2 min-w-0">
                 <span className="w-20 text-sm shrink-0">Tipo</span>
-                <select
-                  value={clock.type}
-                  onChange={e=> onUpdate({ type: e.target.value as ClockType })}
-                  className="flex-1 px-2 py-2 bg-neutral-800 rounded min-w-0"
-                >
+                <select value={clock.type} onChange={e=> onUpdate({ type: e.target.value as ClockType })} className="flex-1 px-2 py-2 bg-neutral-800 rounded min-w-0">
                   {['Evento','Missione','Campagna','Corruzione','Legame','Personalizzato'].map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
               </label>
               <label className="flex items-center gap-2 min-w-0">
                 <span className="w-20 text-sm shrink-0">Tag</span>
-                <input
-                  value={(clock.tags||[]).join(' ')}
-                  onChange={e=> onUpdate({ tags: e.target.value.split(' ').filter(Boolean) })}
-                  placeholder="separati da spazio"
-                  className="flex-1 px-2 py-2 bg-neutral-800 rounded min-w-0"
-                />
+                <input value={(clock.tags||[]).join(' ')} onChange={e=> onUpdate({ tags: e.target.value.split(' ').filter(Boolean) })} placeholder="separati da spazio" className="flex-1 px-2 py-2 bg-neutral-800 rounded min-w-0" />
               </label>
             </div>
 
             <label className="flex items-start gap-2 min-w-0">
               <span className="w-28 text-sm shrink-0 mt-1">Note</span>
-              <textarea
-                rows={2}
-                value={clock.notes || ''}
-                onChange={e=> onUpdate({ notes: e.target.value })}
-                placeholder="markdown breve"
-                className="flex-1 px-2 py-2 bg-neutral-800 rounded whitespace-pre-wrap break-words"
-              />
+              <textarea rows={2} value={clock.notes || ''} onChange={e=> onUpdate({ notes: e.target.value })} placeholder="markdown breve" className="flex-1 px-2 py-2 bg-neutral-800 rounded whitespace-pre-wrap break-words" />
             </label>
 
             <label className="flex items-start gap-2 min-w-0">
               <span className="w-28 text-sm shrink-0 mt-1">onComplete</span>
-              <textarea
-                rows={2}
-                value={clock.onComplete || ''}
-                onChange={e=> onUpdate({ onComplete: e.target.value })}
-                placeholder="conseguenza al completamento"
-                className="flex-1 px-2 py-2 bg-neutral-800 rounded whitespace-pre-wrap break-words"
-              />
+              <textarea rows={2} value={clock.onComplete || ''} onChange={e=> onUpdate({ onComplete: e.target.value })} placeholder="conseguenza al completamento" className="flex-1 px-2 py-2 bg-neutral-800 rounded whitespace-pre-wrap break-words" />
             </label>
 
             <label className="flex items-start gap-2 min-w-0">
               <span className="w-28 text-sm shrink-0 mt-1">Drop</span>
-              <textarea
-                rows={2}
-                value={clock.drop || ''}
-                onChange={e=> onUpdate({ drop: e.target.value })}
-                placeholder="loot/effect libero"
-                className="flex-1 px-2 py-2 bg-neutral-800 rounded whitespace-pre-wrap break-words"
-              />
+              <textarea rows={2} value={clock.drop || ''} onChange={e=> onUpdate({ drop: e.target.value })} placeholder="loot/effect libero" className="flex-1 px-2 py-2 bg-neutral-800 rounded whitespace-pre-wrap break-words" />
             </label>
 
-            <ConcatEditor
-              clock={clock}
-              allClocks={allClocks}
-              onChange={(r)=> onUpdate({ concat: r })}
-            />
+            <ConcatEditor clock={clock} allClocks={allClocks} onChange={(r)=> onUpdate({ concat: r })} />
           </div>
         )}
       </div>
