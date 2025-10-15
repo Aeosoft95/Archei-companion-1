@@ -1,28 +1,55 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { sendLocal } from '@archei/shared';
+import { useEffect, useState } from 'react';
+import { sendLocal, rollArchei } from '@archei/shared';
 import type { WireEvent } from '@archei/shared';
-import { rollArchei } from '@archei/shared';
 
 export default function Tools({ searchParams }: any){
-  const wsUrl = searchParams?.ws || process.env.NEXT_PUBLIC_WS_DEFAULT || 'ws://localhost:8787';
-  const room = searchParams?.room || 'demo';
-  const [mirrorWS, setMirrorWS] = useState(false);
+  const fallback = process.env.NEXT_PUBLIC_WS_DEFAULT || 'ws://127.0.0.1:8787';
+  const wsUrl = (searchParams?.ws || fallback) as string;
+
+  const [room, setRoom] = useState<string>(searchParams?.room || 'demo');
+  const [pin, setPin] = useState<string>(searchParams?.pin || '');
   const [nick, setNick] = useState('GM');
+
+  const [mirrorWS, setMirrorWS] = useState(false);
   const [channel, setChannel] = useState<'global'|'party'|'ooc'|'pm-gm'>('global');
   const [chat, setChat] = useState<string[]>([]);
   const [pool, setPool] = useState(5);
   const [override, setOverride] = useState<number|undefined>(undefined);
 
-  const ws = useMemo(()=> new WebSocket(wsUrl),[wsUrl]);
+  const [ws, setWs] = useState<WebSocket|null>(null);
   useEffect(()=>{
-    ws.onopen = ()=> ws.send(JSON.stringify({ t:'join', room, role:'gm', nick } as WireEvent));
-    ws.onmessage = (m)=> setChat(c=> [...c, String(m.data)]);
-    return ()=> ws.close();
-  },[ws, room, nick]);
+    let active = true, attempt = 0;
+    let sock: WebSocket | null = null;
+
+    const connect = () => {
+      try {
+        sock = new WebSocket(wsUrl);
+        sock.onopen = () => {
+          attempt = 0;
+          try { sock!.send(JSON.stringify({ t:'setup', room, pin: pin || undefined, nick })); } catch {}
+          try { sock!.send(JSON.stringify({ t:'join', room, role:'gm', nick, pin: pin || undefined } as WireEvent)); } catch {}
+        };
+        sock.onerror = () => { try{ sock?.close(); }catch{} };
+        sock.onclose = () => {
+          if (!active) return;
+          const delay = Math.min(1000*(2**attempt++), 10000);
+          setTimeout(connect, delay);
+        };
+        sock.onmessage = (m)=> setChat(c=> [...c, String(m.data)]);
+        setWs(sock);
+      } catch {
+        const delay = Math.min(1000*(2**attempt++), 10000);
+        setTimeout(connect, delay);
+      }
+    };
+
+    connect();
+    return ()=>{ active = false; try{ sock?.close(); }catch{} };
+  }, [wsUrl, room, nick, pin]);
 
   function sendWS(evt: WireEvent){
-    if (!mirrorWS) return;
+    if (!mirrorWS || !ws || ws.readyState !== ws.OPEN) return;
     try { ws.send(JSON.stringify(evt)); } catch {}
   }
 
@@ -63,9 +90,13 @@ export default function Tools({ searchParams }: any){
     <div className="grid gap-4 md:grid-cols-2">
       <div className="card">
         <h2 className="text-lg font-bold mb-2">Connessione</h2>
-        <div className="flex gap-2 items-center">
-          <label>Nick</label><input className="px-2 py-1 bg-neutral-800 rounded" value={nick} onChange={e=>setNick(e.target.value)}/>
-          <label>Room</label><input className="px-2 py-1 bg-neutral-800 rounded" defaultValue={room} readOnly/>
+        <div className="flex flex-wrap gap-2 items-center">
+          <label>Nick</label>
+          <input className="px-2 py-1 bg-neutral-800 rounded" value={nick} onChange={e=>setNick(e.target.value)}/>
+          <label>Room</label>
+          <input className="px-2 py-1 bg-neutral-800 rounded" value={room} onChange={e=>setRoom(e.target.value)}/>
+          <label>PIN</label>
+          <input className="px-2 py-1 bg-neutral-800 rounded w-28" value={pin} onChange={e=>setPin(e.target.value)} placeholder="(opz.)"/>
           <label className="ml-4 flex items-center gap-2">
             <input type="checkbox" checked={mirrorWS} onChange={e=>setMirrorWS(e.target.checked)}/>
             Mirror WS

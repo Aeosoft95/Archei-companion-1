@@ -1,1 +1,4 @@
-export default { reactStrictMode: true };
+﻿export default {
+  reactStrictMode: true,
+  transpilePackages: ['@archei/shared'],
+};
