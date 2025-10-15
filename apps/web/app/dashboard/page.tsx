@@ -4,50 +4,42 @@ import { useRouter } from 'next/navigation';
 import type { Session } from '@/lib/session';
 import { getSession, clearSession } from '@/lib/session';
 import Link from 'next/link';
+import { GuardAuth } from '@/lib/guards';
 
 export default function DashboardPage() {
   const router = useRouter();
   const [session, setSession] = useState<Session | null>(null);
 
-  // Guard: se non sei loggato, torna alla Home (login)
   useEffect(() => {
     const s = getSession();
-    if (!s) {
-      router.replace('/');
-    } else {
-      setSession(s);
-    }
+    if (!s) { router.replace('/'); return; }
+    setSession(s);
   }, [router]);
 
-  if (!session) {
-    // breve stato intermedio mentre controlliamo la sessione
-    return <div className="card">Caricamento...</div>;
-  }
+  if (!session) return <div className="card">Caricamento…</div>;
 
   const isGM = session.role === 'gm';
 
   return (
-    <div className="grid gap-6">
-      <div className="card">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold">Ciao, {session.nick}</h1>
-            <p className="opacity-80">Ruolo: <strong>{session.role.toUpperCase()}</strong></p>
-          </div>
-          <div className="flex items-center gap-2">
+    <GuardAuth>
+      <div className="grid gap-6">
+        <div className="card">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h1 className="text-2xl font-bold">Ciao, {session.nick}</h1>
+              <p className="opacity-80">Ruolo: <strong>{session.role.toUpperCase()}</strong></p>
+            </div>
             <button
               className="px-3 py-1 rounded bg-neutral-800 border border-neutral-700"
-              onClick={() => { clearSession(); router.replace('/'); }}
-              title="Esci"
-            >
+              onClick={() => { clearSession(); router.replace('/'); }}>
               Esci
             </button>
           </div>
         </div>
-      </div>
 
-      {isGM ? <GmMenu/> : <PlayerMenu/>}
-    </div>
+        {isGM ? <GmMenu/> : <PlayerMenu/>}
+      </div>
+    </GuardAuth>
   );
 }
 
@@ -74,8 +66,6 @@ function GmMenu() {
       <CardLink href="/display">Display Locale</CardLink>
       <CardLink href="/display-online">Display Online</CardLink>
       <CardLink href="/join">Gestione Join</CardLink>
-
-      {/* Placeholder che attiveremo nei prossimi step */}
       <CardLink href="#" disabled>Clock</CardLink>
       <CardLink href="#" disabled>Scene</CardLink>
       <CardLink href="#" disabled>Generatore Mostri</CardLink>
@@ -92,8 +82,6 @@ function PlayerMenu() {
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
       <CardLink href="/join">Entra in Stanza</CardLink>
       <CardLink href="/display-online">Display</CardLink>
-
-      {/* Placeholder che attiveremo nei prossimi step */}
       <CardLink href="#" disabled>Scheda</CardLink>
       <CardLink href="#" disabled>Inventario</CardLink>
       <CardLink href="#" disabled>Chat</CardLink>

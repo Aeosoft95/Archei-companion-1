@@ -2,28 +2,25 @@
 import { useEffect, useRef, useState } from 'react';
 import { sendLocal, rollArchei } from '@archei/shared';
 import type { WireEvent } from '@archei/shared';
+import { GuardRole } from '@/lib/guards';
 
-export default function Tools({ searchParams }: any){
+function Content({ searchParams }: any){
   const fallback = process.env.NEXT_PUBLIC_WS_DEFAULT || 'ws://127.0.0.1:8787';
   const wsUrl = (searchParams?.ws || fallback) as string;
 
-  // Connessione / stanza
   const [room, setRoom] = useState<string>(searchParams?.room || 'demo');
   const [pin, setPin] = useState<string>(searchParams?.pin || '');
   const [nick, setNick] = useState('GM');
 
-  // Stato UI
   const [mirrorWS, setMirrorWS] = useState(false);
   const [channel, setChannel] = useState<'global'|'party'|'ooc'|'pm-gm'>('global');
   const [chat, setChat] = useState<string[]>([]);
   const [pool, setPool] = useState(5);
   const [override, setOverride] = useState<number|undefined>(undefined);
 
-  // 🔽 Auto-scroll refs
   const chatBoxRef = useRef<HTMLDivElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  // WebSocket resiliente
   const [ws, setWs] = useState<WebSocket|null>(null);
   useEffect(()=>{
     let active = true, attempt = 0;
@@ -66,16 +63,10 @@ export default function Tools({ searchParams }: any){
     return ()=>{ active = false; try{ sock?.close(); }catch{} };
   }, [wsUrl, room, nick, pin]);
 
-  // 🔽 Auto-scroll: ogni volta che cambia la chat, scorri in fondo
   useEffect(() => {
-    // Usa requestAnimationFrame per aspettare il render del nuovo messaggio
     const id = requestAnimationFrame(() => {
-      if (chatEndRef.current) {
-        chatEndRef.current.scrollIntoView({ block: 'end' });
-      } else if (chatBoxRef.current) {
-        const el = chatBoxRef.current;
-        el.scrollTop = el.scrollHeight;
-      }
+      if (chatEndRef.current) chatEndRef.current.scrollIntoView({ block: 'end' });
+      else if (chatBoxRef.current) chatBoxRef.current.scrollTop = chatBoxRef.current.scrollHeight;
     });
     return () => cancelAnimationFrame(id);
   }, [chat]);
@@ -89,23 +80,19 @@ export default function Tools({ searchParams }: any){
     sendLocal('banner', text);
     sendWS({ t:'banner', room, text });
   }
-
   function sendScene(title?: string, color?: string, image?: string){
     sendLocal('scene', { title, color, image });
     sendWS({ t:'scene', room, title, color, image });
   }
-
   function sendCountdown(seconds: number, text?: string){
     try { const bc = new BroadcastChannel('archei-countdown'); bc.postMessage(seconds); bc.close(); } catch {}
     sendWS({ t:'countdown', room, seconds, text });
   }
-
   function sendChatLine(text: string){
     const evt: WireEvent = { t:'chat', room, nick, channel, text };
     sendWS(evt);
     setChat(c=> [...c, `${nick} [${channel}]: ${text}`]);
   }
-
   function roll(){
     const rr = rollArchei(pool, override);
     const line = `${nick} tira ${pool}d6 (soglia ${rr.threshold}+): ${rr.rolled.join(', ')} => ${rr.successes} succ. (${rr.level})`;
@@ -116,7 +103,6 @@ export default function Tools({ searchParams }: any){
 
   return (
     <div className="grid gap-6 xl:grid-cols-2">
-      {/* CONNESSIONE */}
       <div className="card">
         <h2 className="text-lg font-bold mb-3">Connessione</h2>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -139,7 +125,6 @@ export default function Tools({ searchParams }: any){
         </div>
       </div>
 
-      {/* CHAT */}
       <div className="card">
         <h2 className="text-lg font-bold mb-3">Chat</h2>
         <div className="flex flex-col gap-2">
@@ -162,17 +147,13 @@ export default function Tools({ searchParams }: any){
               }}
             />
           </div>
-          <div
-            ref={chatBoxRef}
-            className="min-h-[12rem] max-h-[28rem] overflow-auto bg-neutral-950/40 rounded p-2 text-sm"
-          >
+          <div ref={chatBoxRef} className="min-h-[12rem] max-h-[28rem] overflow-auto bg-neutral-950/40 rounded p-2 text-sm">
             {chat.map((l,i)=>(<div key={i}>{l}</div>))}
             <div ref={chatEndRef} />
           </div>
         </div>
       </div>
 
-      {/* DADI */}
       <div className="card">
         <h2 className="text-lg font-bold mb-3">Dadi ARCHEI</h2>
         <div className="grid sm:grid-cols-2 gap-3 items-center">
@@ -190,7 +171,6 @@ export default function Tools({ searchParams }: any){
         </div>
       </div>
 
-      {/* SCENE */}
       <div className="card">
         <h2 className="text-lg font-bold mb-3">Scene & Display</h2>
         <div className="grid gap-3">
@@ -224,5 +204,13 @@ export default function Tools({ searchParams }: any){
         </div>
       </div>
     </div>
+  );
+}
+
+export default function Page(props: any) {
+  return (
+    <GuardRole allow="gm">
+      <Content {...props} />
+    </GuardRole>
   );
 }
