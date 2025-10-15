@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.18.0'
+          cache: 'pnpm'
+      - run: corepack enable
+      - run: corepack prepare pnpm@10.18.3 --activate
+      - run: pnpm -w install
+      - run: pnpm build:ws
+      - run: pnpm build:web

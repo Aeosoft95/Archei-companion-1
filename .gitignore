@@ -1,0 +1,10 @@
+node_modules/
+.next/
+dist/
+.runs/
+.env*
+pnpm-lock.yaml
+.DS_Store
+Thumbs.db
+.vercel/
+coverage/
