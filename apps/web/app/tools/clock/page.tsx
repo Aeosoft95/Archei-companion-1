@@ -1,10 +1,11 @@
 'use client';
 /**
- * ARCHEI — CLOCKS (GM) — Sidebar create + per-card editor
- * - Sidebar sinistra: Crea Clock (tab minimale)
- * - Ogni card: ring + comandi rapidi; sotto c'è "Dettagli" con editor completo
- * - Campi dettagli: nome, segmenti, colore, visibilità, emoji-picker, tag, note, onComplete, concat rules, drop, elimina
- * - Persistenza localStorage ("archei:clocks:v1") + BroadcastChannel per display
+ * ARCHEI — CLOCKS (GM) — WS mirror + concat semplificate
+ * - Sidebar: crea clock + filtro + toggle "Mirror su WS" (URL, room, stato)
+ * - Griglia fluida: repeat(auto-fill, minmax(320px, 1fr)) + card full-height
+ * - Persistenza localStorage + BroadcastChannel (display locale)
+ * - WS mirror (opzionale): DISPLAY_CLOCKS_STATE / DISPLAY_HIGHLIGHT (+ room)
+ * - Concat semplificate: relation=after|parallel|gate, ratio, minStep, reveal
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -12,41 +13,35 @@ import { GuardRole } from '@/lib/guards';
 
 /* ---------- Tipi ---------- */
 type ClockType = 'Evento' | 'Missione' | 'Campagna' | 'Corruzione' | 'Legame' | 'Personalizzato';
-type ConcatRelation = 'after' | 'parallel' | 'gate' | 'mirror';
-type ConcatOn = 'advance' | 'complete' | 'regress';
-type CarryMode = 'none' | 'overflow' | 'clamp';
-type VisibilityPropagation = 'inherit' | 'forceVisible' | 'noChange';
 
-type ConcatRule = {
-  relation: ConcatRelation;
+type SimpleRelation = 'after' | 'parallel' | 'gate';
+type SimpleRule = {
+  relation: SimpleRelation;
   targets: string[];
-  on: ConcatOn;
-  ratio?: number;
-  minStep?: number;
-  carryMode?: CarryMode;
-  visibility?: VisibilityPropagation;
-  note?: string;
+  ratio?: number;   // default 1
+  minStep?: number; // default 0
+  reveal?: boolean; // default false
 };
 
 type Clock = {
   id: string;
   name: string;
   type: ClockType;
-  segments: number;  // 2..48
-  filled: number;    // 0..segments
-  visible: boolean;  // sul display
-  color?: string;    // hex
-  icon?: string;     // emoji
+  segments: number;   // 2..48
+  filled: number;     // 0..segments
+  visible: boolean;   // sul display
+  color?: string;
+  icon?: string;
   tags?: string[];
-  notes?: string;    // breve markdown
+  notes?: string;
   onComplete?: string;
-  drop?: string;     // campo libero (loot/effect)
-  concat?: ConcatRule[];
+  drop?: string;
+  concat?: SimpleRule[]; // <— semplificato
 };
 
 /* ---------- Utils ---------- */
 const LS_KEY = 'archei:clocks:v1';
-const clamp = (v:number, lo:number, hi:number) => Math.max(lo, Math.min(hi, v));
+const clamp = (v:number, lo:number, hi:number)=>Math.max(lo, Math.min(hi, v));
 const validate = (c: Clock): Clock => {
   const segments = clamp(Math.floor(c.segments), 2, 48);
   const filled = clamp(Math.floor(c.filled), 0, segments);
@@ -63,8 +58,7 @@ function load(): Clock[] {
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as Clock[];
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map(validate);
+    return Array.isArray(parsed) ? parsed.map(validate) : [];
   } catch { return []; }
 }
 function save(list: Clock[]) {
@@ -77,15 +71,14 @@ type DisplayEvent =
   | { t: 'DISPLAY_CLOCKS_STATE'; clocks: Clock[] }
   | { t: 'DISPLAY_HIGHLIGHT'; clockId: string; type: 'advance' | 'complete' };
 
-function broadcastVisible(list: Clock[]) {
+function broadcastLocal(list: Clock[]) {
   try {
     const bc = new BroadcastChannel('archei-clocks');
-    const ev: DisplayEvent = { t: 'DISPLAY_CLOCKS_STATE', clocks: list.filter(c=>c.visible).map(validate) };
-    bc.postMessage(ev);
+    bc.postMessage({ t: 'DISPLAY_CLOCKS_STATE', clocks: list.filter(c=>c.visible).map(validate) } as DisplayEvent);
     bc.close();
   } catch {}
 }
-function highlight(clockId: string, type: 'advance'|'complete') {
+function highlightLocal(clockId: string, type: 'advance'|'complete') {
   try {
     const bc = new BroadcastChannel('archei-clocks');
     bc.postMessage({ t: 'DISPLAY_HIGHLIGHT', clockId, type } as DisplayEvent);
@@ -93,7 +86,54 @@ function highlight(clockId: string, type: 'advance'|'complete') {
   } catch {}
 }
 
-/* ---------- Emoji Picker semplice ---------- */
+/* ---------- WS Mirror (opzionale) ---------- */
+function useWsMirror() {
+  const [enabled, setEnabled] = useState(false);
+  const [url, setUrl] = useState<string>(process.env.NEXT_PUBLIC_WS_DEFAULT || '');
+  const [room, setRoom] = useState<string>('demo');
+  const [status, setStatus] = useState<'idle'|'connecting'|'open'|'closed'|'error'>('idle');
+  const wsRef = useRef<WebSocket|null>(null);
+
+  useEffect(()=>{
+    if (!enabled) { try { wsRef.current?.close(); } catch {} setStatus('idle'); return; }
+    if (!url || !(url.startsWith('ws://') || url.startsWith('wss://'))) { setStatus('error'); return; }
+
+    let active = true, attempt = 0;
+    const connect = ()=>{
+      try {
+        setStatus('connecting');
+        const ws = new WebSocket(url);
+        wsRef.current = ws;
+
+        ws.onopen = ()=>{ if (!active) return; setStatus('open'); attempt = 0; };
+        ws.onclose = ()=>{
+          if (!active) return;
+          setStatus('closed');
+          const delay = Math.min(1000 * (2 ** attempt++), 10000);
+          setTimeout(connect, delay);
+        };
+        ws.onerror = ()=>{ setStatus('error'); try { ws.close(); } catch {} };
+        ws.onmessage = ()=>{}; // display-only: non riceviamo qui
+      } catch {
+        const delay = Math.min(1000 * (2 ** attempt++), 10000);
+        setTimeout(connect, delay);
+      }
+    };
+
+    connect();
+    return ()=>{ active = false; try { wsRef.current?.close(); } catch {} };
+  }, [enabled, url]);
+
+  function send(ev: any) {
+    const ws = wsRef.current;
+    if (!enabled || !ws || ws.readyState !== ws.OPEN) return false;
+    try { ws.send(JSON.stringify(room ? { room, ...ev } : ev)); return true; } catch { return false; }
+  }
+
+  return { enabled, setEnabled, url, setUrl, room, setRoom, status, send };
+}
+
+/* ---------- Emoji Picker ---------- */
 const COMMON_EMOJI = ['🕒','⏰','🔥','💀','🩸','🛡️','⚔️','🌙','⭐','🌀','👁️','🧿','📜','⚙️','🔮','🧪','🏴','🧭','🗝️','🕯️','🌩️','🌫️','💥','🪙','🎯','🗡️','🏺','🐍','🪄','👑'];
 
 function EmojiPicker({
@@ -122,9 +162,7 @@ function EmojiPicker({
         {value || '😀'}
       </button>
       {open && (
-        <div
-          className={`absolute z-20 mt-2 w-64 rounded-xl border border-neutral-700 bg-neutral-900 p-2 shadow-lg ${align==='right' ? 'right-0' : 'left-0'}`}
-        >
+        <div className={`absolute z-20 mt-2 w-64 rounded-xl border border-neutral-700 bg-neutral-900 p-2 shadow-lg ${align==='right' ? 'right-0' : 'left-0'}`}>
           <div className="grid grid-cols-8 gap-1 text-xl">
             {COMMON_EMOJI.map(em => (
               <button
@@ -198,12 +236,12 @@ function RingClock({ segments, filled, color, onClick, onShiftClick, label }:{
   );
 }
 
-/* ---------- Pagina ---------- */
+/* ---------- Page ---------- */
 export default function Page(){
   return (
     <GuardRole allow="gm">
       <div className="min-h-screen">
-        <div className="max-w-6xl mx-auto px-4 lg:px-6 py-6">
+        <div className="max-w-7xl mx-auto px-4 lg:px-6 py-6">
           <h1 className="text-xl font-bold mb-4">Clock (GM)</h1>
           <ClockWithSidebar />
         </div>
@@ -212,78 +250,67 @@ export default function Page(){
   );
 }
 
-/* ---------- Concat Editor (compatto) ---------- */
+/* ---------- Concat Editor (SEMPLICE) ---------- */
 function ConcatEditor({
   clock, allClocks, onChange
-}: { clock: Clock; allClocks: Clock[]; onChange: (rules: ConcatRule[]) => void }) {
+}: { clock: Clock; allClocks: Clock[]; onChange: (rules: SimpleRule[]) => void }) {
   const rules = clock.concat ?? [];
   const options = allClocks.filter(c => c.id !== clock.id);
 
-  function updateRule(i: number, patch: Partial<ConcatRule>){
+  function updateRule(i: number, patch: Partial<SimpleRule>){
     const next = rules.slice(); next[i] = { ...next[i], ...patch }; onChange(next);
   }
-  function addRule(){ onChange([...(rules||[]), { relation:'after', targets:[], on:'advance', ratio:1, minStep:1, carryMode:'clamp', visibility:'noChange', note:'' }]); }
+  function addRule(){ onChange([...(rules||[]), { relation:'parallel', targets:[], ratio:1, minStep:0, reveal:false }]); }
   function removeRule(i: number){ const next = rules.slice(); next.splice(i,1); onChange(next); }
 
   return (
-    <div className="rounded-xl border border-neutral-800 p-2">
+    <div className="rounded-xl border border-neutral-800 p-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <div className="font-semibold">Concatenazioni</div>
+        <div className="font-semibold">Concatenazioni (semplici)</div>
         <button className="px-2 py-1 rounded bg-neutral-800" onClick={addRule}>+ Regola</button>
       </div>
-      {rules.length === 0 && <div className="text-sm opacity-70 mt-2">Nessuna regola.</div>}
-      <div className="mt-2 grid gap-3">
-        {rules.map((r, i)=>(
-          <div key={i} className="grid md:grid-cols-2 xl:grid-cols-4 gap-2 items-start p-2 rounded bg-neutral-900/60">
-            <label className="flex items-center gap-2">
-              <span className="w-20 text-sm">Relation</span>
-              <select value={r.relation} onChange={e=>updateRule(i, { relation: e.target.value as ConcatRelation })} className="flex-1 px-2 py-1 bg-neutral-800 rounded">
-                <option value="after">after</option>
-                <option value="parallel">parallel</option>
-                <option value="gate">gate</option>
-                <option value="mirror">mirror</option>
-              </select>
-            </label>
-            <label className="flex items-center gap-2">
-              <span className="w-20 text-sm">On</span>
-              <select value={r.on} onChange={e=>updateRule(i, { on: e.target.value as ConcatOn })} className="flex-1 px-2 py-1 bg-neutral-800 rounded">
-                <option value="advance">advance</option>
-                <option value="complete">complete</option>
-                <option value="regress">regress</option>
-              </select>
-            </label>
-            <label className="flex items-center gap-2">
-              <span className="w-20 text-sm">Ratio</span>
-              <input type="number" step="0.25" value={r.ratio ?? 1} onChange={e=>updateRule(i, { ratio: parseFloat(e.target.value||'1') })} className="w-24 px-2 py-1 bg-neutral-800 rounded" />
-            </label>
-            <label className="flex items-center gap-2">
-              <span className="w-24 text-sm">minStep</span>
-              <input type="number" min={0} value={r.minStep ?? 1} onChange={e=>updateRule(i, { minStep: parseInt(e.target.value||'0') })} className="w-24 px-2 py-1 bg-neutral-800 rounded" />
-            </label>
-            <label className="flex items-center gap-2">
-              <span className="w-24 text-sm">Carry</span>
-              <select value={r.carryMode ?? 'clamp'} onChange={e=>updateRule(i, { carryMode: e.target.value as CarryMode })} className="flex-1 px-2 py-1 bg-neutral-800 rounded">
-                <option value="clamp">clamp</option>
-                <option value="none">none</option>
-                <option value="overflow">overflow</option>
-              </select>
-            </label>
-            <label className="flex items-center gap-2">
-              <span className="w-24 text-sm">Visibilità</span>
-              <select value={r.visibility ?? 'noChange'} onChange={e=>updateRule(i, { visibility: e.target.value as VisibilityPropagation })} className="flex-1 px-2 py-1 bg-neutral-800 rounded">
-                <option value="noChange">noChange</option>
-                <option value="inherit">inherit</option>
-                <option value="forceVisible">forceVisible</option>
-              </select>
-            </label>
 
-            <div className="md:col-span-2 xl:col-span-4">
-              <div className="text-xs opacity-80 mb-1">Targets</div>
+      {rules.length === 0 && <div className="text-sm opacity-70 mt-2">Nessuna regola.</div>}
+
+      <div className="mt-3 grid gap-4">
+        {rules.map((r, i)=>(
+          <div key={i} className="rounded-lg bg-neutral-900/60 p-3 grid gap-3">
+            {/* Riga 1 */}
+            <div className="grid md:grid-cols-2 gap-3">
+              <label className="flex items-center gap-2 min-w-0">
+                <span className="w-28 text-sm shrink-0">Relation</span>
+                <select value={r.relation} onChange={e=>updateRule(i, { relation: e.target.value as SimpleRelation })} className="flex-1 px-2 py-2 bg-neutral-800 rounded min-w-0">
+                  <option value="parallel">parallel (su advance)</option>
+                  <option value="after">after (alla complete)</option>
+                  <option value="gate">gate (sblocca+boost)</option>
+                </select>
+              </label>
+              <label className="flex items-center gap-2 min-w-0">
+                <span className="w-28 text-sm shrink-0">Reveal target</span>
+                <input type="checkbox" checked={!!r.reveal} onChange={e=>updateRule(i, { reveal: e.target.checked })}/>
+              </label>
+            </div>
+
+            {/* Riga 2 */}
+            <div className="grid md:grid-cols-2 gap-3">
+              <label className="flex items-center gap-2 min-w-0">
+                <span className="w-28 text-sm shrink-0">Ratio</span>
+                <input type="number" step="0.25" value={r.ratio ?? 1} onChange={e=>updateRule(i, { ratio: parseFloat(e.target.value||'1') })} className="flex-1 px-2 py-2 bg-neutral-800 rounded min-w-0" />
+              </label>
+              <label className="flex items-center gap-2 min-w-0">
+                <span className="w-28 text-sm shrink-0">minStep</span>
+                <input type="number" min={0} value={r.minStep ?? 0} onChange={e=>updateRule(i, { minStep: parseInt(e.target.value||'0') })} className="flex-1 px-2 py-2 bg-neutral-800 rounded min-w-0" />
+              </label>
+            </div>
+
+            {/* Targets */}
+            <div>
+              <div className="text-xs opacity-80 mb-2">Targets</div>
               <div className="flex flex-wrap gap-2">
                 {options.map(o=>{
                   const on = (r.targets||[]).includes(o.id);
                   return (
-                    <label key={o.id} className={`px-2 py-1 rounded border cursor-pointer ${on ? 'border-emerald-500' : 'border-neutral-700'}`}>
+                    <label key={o.id} className={`px-2 py-1 rounded border cursor-pointer break-words ${on ? 'border-emerald-500' : 'border-neutral-700'}`}>
                       <input
                         type="checkbox" className="mr-1"
                         checked={on}
@@ -293,20 +320,20 @@ function ConcatEditor({
                           updateRule(i, { targets: Array.from(set) });
                         }}
                       />
-                      {o.icon || '🕒'} {o.name}
+                      <span className="whitespace-pre-wrap break-words">{o.icon || '🕒'} {o.name}</span>
                     </label>
                   );
                 })}
               </div>
             </div>
 
-            <div className="md:col-span-2 xl:col-span-4 grid md:grid-cols-[1fr_auto] gap-2">
-              <input
-                placeholder="Nota/spiegazione"
-                value={r.note || ''}
-                onChange={e=>updateRule(i, { note: e.target.value })}
-                className="px-2 py-1 bg-neutral-800 rounded"
-              />
+            <div className="text-xs opacity-70">
+              <b>parallel</b>: su <i>advance</i> trasferisce <code>round(delta*ratio)</code> (se &lt;1 ma &gt;0 usa <code>minStep</code>).<br/>
+              <b>after</b>: su <i>complete</i> applica boost = <code>round(segmentsTarget*ratio)</code> (o <code>minStep</code> se &gt;0).<br/>
+              <b>gate</b>: come <i>after</i> ma prima sblocca/mostra il target (se <code>reveal</code>).
+            </div>
+
+            <div className="text-right">
               <button className="px-2 py-1 rounded bg-neutral-800" onClick={()=>removeRule(i)}>Rimuovi</button>
             </div>
           </div>
@@ -322,6 +349,9 @@ function ClockWithSidebar(){
   const [search, setSearch] = useState('');
   const typeOptions: ClockType[] = ['Evento','Missione','Campagna','Corruzione','Legame','Personalizzato'];
 
+  // WS mirror hook
+  const ws = useWsMirror();
+
   const inited = useRef(false);
   useEffect(()=>{
     if (inited.current) return;
@@ -334,23 +364,79 @@ function ClockWithSidebar(){
         validate({ id: uuid(), name: 'Ondata di Ombre', type:'Evento', segments: 8, filled: 0, visible: false, color: '#fca5a5', icon:'💀' }),
       ]);
     }
+    // broadcast iniziale
+    setTimeout(()=>{
+      const snapshot = load();
+      broadcastLocal(snapshot);
+      if (ws.enabled) ws.send({ t:'DISPLAY_CLOCKS_STATE', clocks: snapshot.filter(c=>c.visible) });
+    }, 0);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Persist + broadcast su ogni modifica
   useEffect(()=>{
     const next = clocks.map(validate);
     save(next);
-    broadcastVisible(next);
-  }, [clocks]);
+    broadcastLocal(next);
+    if (ws.enabled) ws.send({ t:'DISPLAY_CLOCKS_STATE', clocks: next.filter(c=>c.visible) });
+  }, [clocks, ws.enabled]); // se abiliti WS dopo, invia stato corrente
 
   /* --- helpers --- */
   const applyDelta = (id: string, delta: number) => {
     setClocks(prev => {
-      const out = prev.map(c => c.id===id ? validate({ ...c, filled: clamp(c.filled + delta, 0, c.segments) }) : c);
-      const before = prev.find(c=>c.id===id)!;
-      const after  = out.find(c=>c.id===id)!;
-      if (after.filled > before.filled) highlight(id, after.filled===after.segments ? 'complete' : 'advance');
+      const map = new Map(prev.map(c => [c.id, { ...c }]));
+      const src = map.get(id); if (!src) return prev;
+      const before = src.filled;
+      src.filled = clamp(src.filled + delta, 0, src.segments);
+      map.set(id, validate(src));
+
+      // Concat semplificate
+      const rules = (src.concat||[]).slice();
+      const addTo = (tid: string, d: number, reveal?: boolean)=>{
+        const tgt = map.get(tid); if (!tgt || d===0) return;
+        const visible = reveal ? true : tgt.visible;
+        const filled = clamp(tgt.filled + d, 0, tgt.segments);
+        map.set(tid, validate({ ...tgt, filled, visible }));
+      };
+
+      // parallel: su advance
+      if (delta > 0) {
+        for (const r of rules.filter(r=>r.relation==='parallel')) {
+          const ratio = r.ratio ?? 1;
+          let pass = Math.round(delta * ratio);
+          if (pass < 1 && delta > 0 && (r.minStep ?? 0) > 0) pass = r.minStep!;
+          for (const t of r.targets||[]) addTo(t, pass, r.reveal);
+        }
+      }
+
+      // complete: after/gate
+      const wasComplete = before >= src.segments;
+      const nowComplete = src.filled >= src.segments;
+      if (!wasComplete && nowComplete) {
+        for (const r of rules.filter(r=>r.relation==='after' || r.relation==='gate')) {
+          for (const t of r.targets||[]) {
+            const tgt = map.get(t); if (!tgt) continue;
+            const ratio = r.ratio ?? 1;
+            let boost = Math.round((tgt.segments) * ratio);
+            if ((r.minStep ?? 0) > 0) boost = Math.max(boost, r.minStep!);
+            addTo(t, boost, r.reveal || r.relation==='gate');
+          }
+        }
+      }
+
+      const out = Array.from(map.values()).map(validate);
+
+      // highlight sorgente
+      if (src.filled > before) {
+        const type = src.filled >= src.segments ? 'complete' : 'advance';
+        highlightLocal(src.id, type);
+        if (ws.enabled) ws.send({ t:'DISPLAY_HIGHLIGHT', clockId: src.id, type });
+      }
+
       return out;
     });
   };
+
   const upsert = (patch: Partial<Clock> & { id?: string }) => {
     setClocks(prev=>{
       if (patch.id){
@@ -390,7 +476,7 @@ function ClockWithSidebar(){
     setNName(''); setNSeg(6); setNCol('#94a3b8'); setNIcon('🕒'); setNType('Personalizzato');
   };
 
-  /* --- filtro semplice per nome/tag --- */
+  /* --- filtro semplice --- */
   const filtered = useMemo(()=>{
     if (!search.trim()) return clocks;
     const k = search.toLowerCase();
@@ -399,7 +485,7 @@ function ClockWithSidebar(){
 
   return (
     <div className="grid gap-6 lg:grid-cols-[320px,minmax(0,1fr)] items-start">
-      {/* Sidebar sinistra — Nuovo Clock */}
+      {/* Sidebar sinistra — Nuovo Clock + filtro + WS */}
       <aside className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-3 sticky top-20 h-fit">
         <div className="text-sm uppercase tracking-wide opacity-70 mb-2">Nuovo Clock</div>
         <div className="grid gap-2">
@@ -445,20 +531,60 @@ function ClockWithSidebar(){
             Azzera filtro
           </button>
         </div>
+
+        <hr className="my-4 border-neutral-800" />
+
+        {/* Mirror WS */}
+        <div className="grid gap-2">
+          <label className="flex items-center justify-between gap-2">
+            <span className="text-sm">Mirror su WebSocket</span>
+            <input type="checkbox" checked={ws.enabled} onChange={e=>ws.setEnabled(e.target.checked)} />
+          </label>
+
+          {ws.enabled && (
+            <>
+              <label className="grid gap-1">
+                <span className="text-xs opacity-70">WS URL</span>
+                <input
+                  value={ws.url}
+                  onChange={e=>ws.setUrl(e.target.value)}
+                  placeholder="wss://... o ws://localhost:8787"
+                  className="px-2 py-2 bg-neutral-800 rounded"
+                />
+              </label>
+              <label className="grid gap-1">
+                <span className="text-xs opacity-70">Room</span>
+                <input
+                  value={ws.room}
+                  onChange={e=>ws.setRoom(e.target.value)}
+                  placeholder="demo"
+                  className="px-2 py-2 bg-neutral-800 rounded"
+                />
+              </label>
+              <div className="text-xs px-2 py-1 rounded bg-neutral-800 border border-neutral-700 w-fit">
+                {ws.status==='open' ? '🟢 Connesso'
+                  : ws.status==='connecting' ? '🟡 Connessione…'
+                  : ws.status==='error' ? '🔴 Errore URL'
+                  : '⚫ Inattivo'}
+              </div>
+            </>
+          )}
+        </div>
       </aside>
 
       {/* Colonna destra — Lista */}
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      <section className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(320px,1fr))]">
         {filtered.map(c=>(
-          <ClockCard
-            key={c.id}
-            clock={c}
-            allClocks={clocks}
-            onDelta={(d)=>applyDelta(c.id, d)}
-            onUpdate={(patch)=>upsert({ id: c.id, ...patch })}
-            onToggleVis={()=>toggleVis(c.id)}
-            onRemove={()=>remove(c.id)}
-          />
+          <div key={c.id} className="h-full">
+            <ClockCard
+              clock={c}
+              allClocks={clocks}
+              onDelta={(d)=>applyDelta(c.id, d)}
+              onUpdate={(patch)=>upsert({ id: c.id, ...patch })}
+              onToggleVis={()=>toggleVis(c.id)}
+              onRemove={()=>remove(c.id)}
+            />
+          </div>
         ))}
 
         {filtered.length === 0 && (
@@ -485,7 +611,7 @@ function ClockCard({
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="rounded-2xl border border-neutral-800 p-3 space-y-3 bg-neutral-900/40">
+    <div className="rounded-2xl border border-neutral-800 p-3 bg-neutral-900/40 flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center gap-2 flex-wrap">
         <EmojiPicker value={clock.icon || '🕒'} onPick={(em)=>onUpdate({ icon: em })} />
@@ -500,8 +626,8 @@ function ClockCard({
         <button onClick={onRemove} className="px-2 py-1 rounded hover:bg-neutral-800" title="Elimina">✕</button>
       </div>
 
-      {/* Ring + controlli rapidi */}
-      <div className="grid gap-3 items-start md:grid-cols-[auto,1fr]">
+      {/* Body */}
+      <div className="mt-3 grid gap-3 items-start md:grid-cols-[auto,1fr]">
         <div className="justify-self-center md:justify-self-start">
           <RingClock
             segments={clock.segments}
@@ -545,8 +671,8 @@ function ClockCard({
         </div>
       </div>
 
-      {/* Dettagli toggle */}
-      <div className="pt-2 border-t border-neutral-800">
+      {/* Dettagli */}
+      <div className="mt-3 pt-2 border-t border-neutral-800">
         <button
           className="text-sm opacity-80 hover:opacity-100 px-2 py-1 rounded hover:bg-neutral-800"
           onClick={()=>setOpen(o=>!o)}
@@ -562,7 +688,7 @@ function ClockCard({
                 <select
                   value={clock.type}
                   onChange={e=> onUpdate({ type: e.target.value as ClockType })}
-                  className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0"
+                  className="flex-1 px-2 py-2 bg-neutral-800 rounded min-w-0"
                 >
                   {['Evento','Missione','Campagna','Corruzione','Legame','Personalizzato'].map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
@@ -573,42 +699,44 @@ function ClockCard({
                   value={(clock.tags||[]).join(' ')}
                   onChange={e=> onUpdate({ tags: e.target.value.split(' ').filter(Boolean) })}
                   placeholder="separati da spazio"
-                  className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0"
+                  className="flex-1 px-2 py-2 bg-neutral-800 rounded min-w-0"
                 />
               </label>
             </div>
 
-            <label className="flex items-center gap-2 min-w-0">
-              <span className="w-28 text-sm shrink-0">Note</span>
-              <input
+            <label className="flex items-start gap-2 min-w-0">
+              <span className="w-28 text-sm shrink-0 mt-1">Note</span>
+              <textarea
+                rows={2}
                 value={clock.notes || ''}
                 onChange={e=> onUpdate({ notes: e.target.value })}
                 placeholder="markdown breve"
-                className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0"
+                className="flex-1 px-2 py-2 bg-neutral-800 rounded whitespace-pre-wrap break-words"
               />
             </label>
 
-            <label className="flex items-center gap-2 min-w-0">
-              <span className="w-28 text-sm shrink-0">onComplete</span>
-              <input
+            <label className="flex items-start gap-2 min-w-0">
+              <span className="w-28 text-sm shrink-0 mt-1">onComplete</span>
+              <textarea
+                rows={2}
                 value={clock.onComplete || ''}
                 onChange={e=> onUpdate({ onComplete: e.target.value })}
                 placeholder="conseguenza al completamento"
-                className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0"
+                className="flex-1 px-2 py-2 bg-neutral-800 rounded whitespace-pre-wrap break-words"
               />
             </label>
 
-            <label className="flex items-center gap-2 min-w-0">
-              <span className="w-28 text-sm shrink-0">Drop</span>
-              <input
+            <label className="flex items-start gap-2 min-w-0">
+              <span className="w-28 text-sm shrink-0 mt-1">Drop</span>
+              <textarea
+                rows={2}
                 value={clock.drop || ''}
                 onChange={e=> onUpdate({ drop: e.target.value })}
                 placeholder="loot/effect libero"
-                className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0"
+                className="flex-1 px-2 py-2 bg-neutral-800 rounded whitespace-pre-wrap break-words"
               />
             </label>
 
-            {/* Concat editor */}
             <ConcatEditor
               clock={clock}
               allClocks={allClocks}
