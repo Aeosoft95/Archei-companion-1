@@ -1,10 +1,9 @@
 'use client';
 /**
- * ARCHEI — CLOCKS (GM) — spec v1.0 (layout tidy)
- * - Layout ripulito e centrato
- * - Toolbar sticky in alto
- * - Colonna sinistra: Config WS / Nuovo / Filtri
- * - Colonna destra: Lista clock in griglia responsiva
+ * ARCHEI — CLOCKS (GM) — persistence + layout refined
+ * - Salvataggio localStorage ("archei:clocks:v1")
+ * - Layout centrato, due colonne stabili, card responsive
+ * - Nessuna sovrapposizione: min-w-0, flex-wrap, overflow-visible
  * - Funzioni: advance/regress, labels, concat, visibilità, undo/redo, broadcast
  */
 
@@ -72,7 +71,33 @@ function uuid() {
     : `ck_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/* ----------------- WS/BC Broadcast ----------------- */
+/* ----------------- Persistence ----------------- */
+const LS_KEY = 'archei:clocks:v1';
+
+function deepClone(list: Clock[]): Clock[] {
+  return list.map(c => ({
+    ...c,
+    tags: c.tags ? [...c.tags] : undefined,
+    triggers: c.triggers ? [...c.triggers] : undefined,
+    concat: c.concat ? c.concat.map(r => ({ ...r, targets: [...r.targets] })) : undefined,
+  }));
+}
+function loadFromStorage(): Clock[] | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Clock[];
+    if (!Array.isArray(parsed)) return null;
+    return parsed.map(validate);
+  } catch { return null; }
+}
+function saveToStorage(list: Clock[]) {
+  if (typeof window === 'undefined') return;
+  try { localStorage.setItem(LS_KEY, JSON.stringify(list)); } catch {}
+}
+
+/* ----------------- Broadcast (BC + WS) ----------------- */
 function useBroadcast(wsEnabled: boolean, wsUrl: string | null, room: string | null) {
   const wsRef = useRef<WebSocket | null>(null);
   const [wsReady, setWsReady] = useState(false);
@@ -111,7 +136,6 @@ function useBroadcast(wsEnabled: boolean, wsUrl: string | null, room: string | n
     if (!wsEnabled || !wsRef.current || wsRef.current.readyState !== wsRef.current.OPEN) return false;
     try { wsRef.current.send(JSON.stringify(room ? { room, ...ev } : ev)); return true; } catch { return false; }
   }
-
   return { wsReady, postLocal, postWS };
 }
 
@@ -188,24 +212,24 @@ function applyConcat_onRegress(src: Clock, delta: number, ctx: ConcatContext) {
   }
 }
 
-/* ----------------- SVG CLOCK ----------------- */
+/* ----------------- Ring Clock (SVG) ----------------- */
 function RingClock({
   segments, filled, color, onClick, onShiftClick, label,
 }: {
   segments: number; filled: number; color?: string;
   onClick?: ()=>void; onShiftClick?: ()=>void; label?: string;
 }) {
-  const size = 132; // leggermente più grande e uniforme
-  const r = 48;
+  const size = 136;
+  const r = 50;
   const stroke = 10;
   const cx = size/2, cy = size/2;
 
   const full = 360;
-  const gap = Math.max(2, 14 / Math.max(segments, 4)); // gap dinamico
+  const gap = Math.max(2, 14 / Math.max(segments, 4));
   const per = full / segments;
   const span = Math.max(6, per - gap);
 
-  const arcs = [];
+  const arcs: { s:number; e:number; on:boolean }[] = [];
   let start = -90;
   for (let i=0;i<segments;i++){
     const s = start + gap/2;
@@ -222,7 +246,7 @@ function RingClock({
   return (
     <svg
       width={size} height={size}
-      className="cursor-pointer shrink-0"
+      className="cursor-pointer shrink-0 overflow-visible"
       role="img"
       aria-label={label||'Clock'}
       onClick={(e)=> e.shiftKey ? onShiftClick?.() : onClick?.()}
@@ -254,8 +278,10 @@ function RingClock({
 export default function Page(){
   return (
     <GuardRole allow="gm">
-      <div className="max-w-6xl mx-auto px-3 md:px-4 lg:px-6">
-        <ClockManager />
+      <div className="min-h-screen">
+        <div className="max-w-7xl mx-auto px-4 lg:px-6">
+          <ClockManager />
+        </div>
       </div>
     </GuardRole>
   );
@@ -268,43 +294,68 @@ function ClockManager(){
   const [room, setRoom] = useState<string>('demo');
   const { wsReady, postLocal, postWS } = useBroadcast(enableWS, wsUrl, room);
 
-  // Stato + demo iniziale
-  const [clocks, setClocks] = useState<Clock[]>([
-    validate({
-      id: uuid(),
-      name: 'Portale Instabile',
-      type: 'Missione',
-      segments: 6,
-      filled: 2,
-      visible: true,
-      icon: '⏰',
-      color: '#7dd3fc',
-      triggers: ['+1/round', 'fallimenti'],
-      onComplete: 'Il varco si apre definitivamente; ondata di Ombre invade il campo.',
-      concat: [
-        { relation: 'after', targets: ['ck_ombre'], on: 'complete', ratio: 1, minStep: 6, carryMode: 'clamp', visibility: 'forceVisible', note: 'Completa A → B a 6/8' }
-      ]
-    }),
-    validate({
-      id: 'ck_ombre',
-      name: 'Ondata di Ombre',
-      type: 'Evento',
-      segments: 8,
-      filled: 0,
-      visible: false,
-      color: '#fca5a5',
-      onComplete: 'Campo travolto.'
-    })
-  ]);
+  // Stato + init da storage
+  const [clocks, setClocks] = useState<Clock[]>([]);
+  const initializedRef = useRef(false);
 
-  // Undo/Redo stacks
+  // Undo/Redo
   const undoStack = useRef<Clock[][]>([]);
   const redoStack = useRef<Clock[][]>([]);
-  const deepClone = (list: Clock[]) =>
-    list.map(c => ({ ...c, tags: c.tags ? [...c.tags] : undefined, triggers: c.triggers ? [...c.triggers] : undefined, concat: c.concat ? c.concat.map(r => ({ ...r, targets: [...r.targets] })) : undefined }));
   const pushHistory = (prev: Clock[]) => { undoStack.current.push(deepClone(prev)); redoStack.current = []; };
   const doUndo = () => { const prev = undoStack.current.pop(); if (!prev) return; redoStack.current.push(deepClone(clocks)); setClocks(prev.map(validate)); broadcastState(prev); };
   const doRedo = () => { const next = redoStack.current.pop(); if (!next) return; undoStack.current.push(deepClone(clocks)); setClocks(next.map(validate)); broadcastState(next); };
+
+  // Inizializza (una volta) dal localStorage, altrimenti esempi
+  useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+    const saved = loadFromStorage();
+    if (saved && saved.length) {
+      setClocks(saved.map(validate));
+    } else {
+      setClocks([
+        validate({
+          id: uuid(),
+          name: 'Portale Instabile',
+          type: 'Missione',
+          segments: 6,
+          filled: 2,
+          visible: true,
+          icon: '⏰',
+          color: '#7dd3fc',
+          triggers: ['+1/round', 'fallimenti'],
+          onComplete: 'Il varco si apre definitivamente; ondata di Ombre invade il campo.',
+          concat: [
+            { relation: 'after', targets: ['ck_ombre'], on: 'complete', ratio: 1, minStep: 6, carryMode: 'clamp', visibility: 'forceVisible', note: 'Completa A → B a 6/8' }
+          ]
+        }),
+        validate({
+          id: 'ck_ombre',
+          name: 'Ondata di Ombre',
+          type: 'Evento',
+          segments: 8,
+          filled: 0,
+          visible: false,
+          color: '#fca5a5',
+          onComplete: 'Campo travolto.'
+        })
+      ]);
+    }
+  }, []);
+
+  // Salvataggio debounced su ogni cambio di clocks
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!initializedRef.current) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const snapshot = deepClone(clocks).map(validate);
+    saveTimer.current = setTimeout(() => {
+      saveToStorage(snapshot);
+      broadcastState(snapshot);
+    }, 200);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clocks]);
 
   // Helpers broadcast
   function broadcastState(state?: Clock[]) {
@@ -359,31 +410,12 @@ function ClockManager(){
         highlight(id, 'advance');
       }
 
-      const nextState = Array.from(map.values()).map(validate);
-      setTimeout(()=>broadcastState(nextState), 0);
-      postWS({ t: 'CLOCK_UPDATE', clockId: id, delta });
-      return nextState;
+      return Array.from(map.values()).map(validate);
     });
   }
 
-  function upsertClock(fields: Partial<Clock> & { id?: string }) {
-    setClocks(prev => {
-      pushHistory(prev);
-      let out = [...prev];
-      if (fields.id) {
-        const idx = out.findIndex(c => c.id === fields.id);
-        if (idx >= 0) { out[idx] = validate({ ...out[idx], ...fields }); postWS({ t: 'CLOCK_UPDATE', clockId: out[idx].id, fields }); }
-        else { const c = validate(newClockFromFields(fields)); out.push(c); postWS({ t: 'CLOCK_CREATE', clock: c }); }
-      } else {
-        const c = validate(newClockFromFields(fields));
-        out.push(c); postWS({ t: 'CLOCK_CREATE', clock: c });
-      }
-      setTimeout(()=>broadcastState(out), 0);
-      return out;
-    });
-  }
   function newClockFromFields(fields: Partial<Clock>) {
-    return {
+    return validate({
       id: fields.id ?? uuid(),
       name: fields.name ?? 'Nuovo Clock',
       type: (fields.type as ClockType) ?? 'Personalizzato',
@@ -397,24 +429,40 @@ function ClockManager(){
       triggers: fields.triggers ?? [],
       onComplete: fields.onComplete ?? '',
       concat: fields.concat ?? []
-    } as Clock;
+    });
   }
+
+  function upsertClock(fields: Partial<Clock> & { id?: string }) {
+    setClocks(prev => {
+      pushHistory(prev);
+      const out = [...prev];
+      if (fields.id) {
+        const idx = out.findIndex(c => c.id === fields.id);
+        if (idx >= 0) { out[idx] = validate({ ...out[idx], ...fields }); postWS({ t: 'CLOCK_UPDATE', clockId: out[idx].id, fields }); }
+        else { const c = newClockFromFields(fields); out.push(c); postWS({ t: 'CLOCK_CREATE', clock: c }); }
+      } else {
+        const c = newClockFromFields(fields);
+        out.push(c); postWS({ t: 'CLOCK_CREATE', clock: c });
+      }
+      return out;
+    });
+  }
+
   function deleteClock(id: string) {
     setClocks(prev => {
       pushHistory(prev);
       const out = prev.filter(c => c.id !== id);
       postWS({ t: 'CLOCK_DELETE', clockId: id });
-      setTimeout(()=>broadcastState(out), 0);
       return out;
     });
   }
+
   function toggleVisible(id: string) {
     setClocks(prev => {
       pushHistory(prev);
       const out = prev.map(c => c.id === id ? { ...c, visible: !c.visible } : c);
       const target = out.find(c => c.id === id)!;
       postWS({ t: 'CLOCK_TOGGLE_VIS', clockId: id, visible: target.visible });
-      setTimeout(()=>broadcastState(out), 0);
       return out;
     });
   }
@@ -434,230 +482,233 @@ function ClockManager(){
     });
   }, [clocks, search, typeFilter, tagFilter]);
 
-  // broadcast iniziale
-  useEffect(()=>{ broadcastState(); /* eslint-disable-next-line */ }, []);
-
   /* ---------- LAYOUT ---------- */
   return (
-    <div className="grid gap-6">
-      {/* Toolbar sticky */}
+    <div className="py-6">
+      {/* Toolbar */}
       <div className="sticky top-0 z-10 backdrop-blur supports-[backdrop-filter]:bg-neutral-900/80 bg-neutral-900/95 border-b border-neutral-800">
         <div className="py-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <h1 className="text-xl font-bold leading-tight">Clock (GM)</h1>
-              <p className="text-xs opacity-70">Click: <b>+1</b> • Shift+Click: <b>-1</b> • Bottoni: <b>+2/+3/−1</b> • Undo/Redo</p>
+          <div className="max-w-7xl mx-auto px-4 lg:px-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h1 className="text-xl font-bold leading-tight">Clock (GM)</h1>
+                <p className="text-xs opacity-70">Click: <b>+1</b> • Shift+Click: <b>-1</b> • Bottoni: <b>+2/+3/−1</b> • Undo/Redo</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={enableWS} onChange={e=>setEnableWS(e.target.checked)} />
+                  <span>WS</span>
+                </label>
+                <span className="text-xs px-2 py-1 rounded bg-neutral-800 border border-neutral-700">
+                  {enableWS ? (wsReady ? '🟢 Online' : '🔴 Offline') : 'WS disattivo'}
+                </span>
+              </div>
             </div>
-            <div className="flex items-center gap-3">
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={enableWS} onChange={e=>setEnableWS(e.target.checked)} />
-                <span>WS</span>
-              </label>
-              <span className="text-xs px-2 py-1 rounded bg-neutral-800 border border-neutral-700">
-                {enableWS ? (wsReady ? '🟢 Online' : '🔴 Offline') : 'WS disattivo'}
-              </span>
-            </div>
-          </div>
 
-          {enableWS && (
-            <div className="mt-3 grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
-              <label className="flex items-center gap-2">
-                <span className="w-20 text-sm">WS URL</span>
-                <input className="flex-1 px-2 py-1 bg-neutral-800 rounded" value={wsUrl} onChange={e=>setWsUrl(e.target.value)} />
-              </label>
-              <label className="flex items-center gap-2">
-                <span className="w-20 text-sm">Room</span>
-                <input className="flex-1 px-2 py-1 bg-neutral-800 rounded" value={room} onChange={e=>setRoom(e.target.value)} />
-              </label>
-            </div>
-          )}
+            {enableWS && (
+              <div className="mt-3 grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                <label className="flex items-center gap-2 min-w-0">
+                  <span className="w-20 text-sm shrink-0">WS URL</span>
+                  <input className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0" value={wsUrl} onChange={e=>setWsUrl(e.target.value)} />
+                </label>
+                <label className="flex items-center gap-2 min-w-0">
+                  <span className="w-20 text-sm shrink-0">Room</span>
+                  <input className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0" value={room} onChange={e=>setRoom(e.target.value)} />
+                </label>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Body a 2 colonne */}
-      <div className="grid lg:grid-cols-[360px,1fr] gap-6 items-start">
-        {/* Colonna sinistra */}
-        <div className="grid gap-6">
-          {/* Nuovo Clock */}
-          <div className="card">
-            <h2 className="text-lg font-semibold mb-2">Nuovo Clock</h2>
-            <div className="grid gap-2">
-              <div className="grid grid-cols-2 gap-2">
-                <input id="nc-name" placeholder="Nome" className="px-2 py-1 bg-neutral-800 rounded col-span-2" />
-                <select id="nc-type" className="px-2 py-1 bg-neutral-800 rounded">
+      {/* Body 2 colonne */}
+      <div className="max-w-7xl mx-auto px-4 lg:px-6 mt-6">
+        <div className="grid lg:grid-cols-[340px,minmax(0,1fr)] gap-6 items-start">
+          {/* Colonna sinistra */}
+          <div className="grid gap-6">
+            {/* Nuovo Clock */}
+            <div className="card">
+              <h2 className="text-lg font-semibold mb-2">Nuovo Clock</h2>
+              <div className="grid gap-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <input id="nc-name" placeholder="Nome" className="px-2 py-1 bg-neutral-800 rounded col-span-2 min-w-0" />
+                  <select id="nc-type" className="px-2 py-1 bg-neutral-800 rounded min-w-0">
+                    {typeOptions.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <input id="nc-seg" type="number" min={2} defaultValue={6} className="px-2 py-1 bg-neutral-800 rounded min-w-0" />
+                  <input id="nc-color" type="color" defaultValue="#94a3b8" className="px-2 py-1 bg-neutral-800 rounded h-9 min-w-0" />
+                  <input id="nc-icon" placeholder="Icona (emoji)" className="px-2 py-1 bg-neutral-800 rounded col-span-2 min-w-0" />
+                  <input id="nc-tags" placeholder="tag separati da spazio" className="px-2 py-1 bg-neutral-800 rounded col-span-2 min-w-0" />
+                  <input id="nc-notes" placeholder="Note (breve)" className="px-2 py-1 bg-neutral-800 rounded col-span-2 min-w-0" />
+                </div>
+                <button
+                  className="mt-1 px-3 py-2 rounded bg-neutral-200 text-neutral-900 font-semibold"
+                  onClick={()=>{
+                    const name = (document.getElementById('nc-name') as HTMLInputElement).value || 'Nuovo Clock';
+                    const type = (document.getElementById('nc-type') as HTMLSelectElement).value as ClockType;
+                    const segments = parseInt((document.getElementById('nc-seg') as HTMLInputElement).value||'6');
+                    const color = (document.getElementById('nc-color') as HTMLInputElement).value || '#94a3b8';
+                    const icon = (document.getElementById('nc-icon') as HTMLInputElement).value || '🕒';
+                    const tags = ((document.getElementById('nc-tags') as HTMLInputElement).value || '').split(' ').filter(Boolean);
+                    const notes = (document.getElementById('nc-notes') as HTMLInputElement).value || '';
+                    upsertClock({ name, type, segments, color, icon, tags, notes });
+                    ['nc-name','nc-tags','nc-notes'].forEach(id => { const el = document.getElementById(id) as HTMLInputElement; if (el) el.value=''; });
+                  }}
+                >
+                  Crea
+                </button>
+              </div>
+            </div>
+
+            {/* Filtri */}
+            <div className="card">
+              <h2 className="text-lg font-semibold mb-2">Filtri</h2>
+              <div className="grid gap-2">
+                <input placeholder="Cerca per nome o tag…" value={search} onChange={e=>setSearch(e.target.value)} className="px-2 py-1 bg-neutral-800 rounded min-w-0" />
+                <select value={typeFilter} onChange={e=>setTypeFilter(e.target.value as any)} className="px-2 py-1 bg-neutral-800 rounded min-w-0">
+                  <option value="Tutti">Tutti i tipi</option>
                   {typeOptions.map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
-                <input id="nc-seg" type="number" min={2} defaultValue={6} className="px-2 py-1 bg-neutral-800 rounded" />
-                <input id="nc-color" type="color" defaultValue="#94a3b8" className="px-2 py-1 bg-neutral-800 rounded h-9" />
-                <input id="nc-icon" placeholder="Icona (emoji)" className="px-2 py-1 bg-neutral-800 rounded col-span-2" />
-                <input id="nc-tags" placeholder="tag separati da spazio" className="px-2 py-1 bg-neutral-800 rounded col-span-2" />
-                <input id="nc-notes" placeholder="Note (breve)" className="px-2 py-1 bg-neutral-800 rounded col-span-2" />
-              </div>
-              <button
-                className="mt-1 px-3 py-2 rounded bg-neutral-200 text-neutral-900 font-semibold"
-                onClick={()=>{
-                  const name = (document.getElementById('nc-name') as HTMLInputElement).value || 'Nuovo Clock';
-                  const type = (document.getElementById('nc-type') as HTMLSelectElement).value as ClockType;
-                  const segments = parseInt((document.getElementById('nc-seg') as HTMLInputElement).value||'6');
-                  const color = (document.getElementById('nc-color') as HTMLInputElement).value || '#94a3b8';
-                  const icon = (document.getElementById('nc-icon') as HTMLInputElement).value || '🕒';
-                  const tags = ((document.getElementById('nc-tags') as HTMLInputElement).value || '').split(' ').filter(Boolean);
-                  const notes = (document.getElementById('nc-notes') as HTMLInputElement).value || '';
-                  upsertClock({ name, type, segments, color, icon, tags, notes });
-                  ['nc-name','nc-tags','nc-notes'].forEach(id => { const el = document.getElementById(id) as HTMLInputElement; if (el) el.value=''; });
-                }}
-              >
-                Crea
-              </button>
-            </div>
-          </div>
-
-          {/* Filtri */}
-          <div className="card">
-            <h2 className="text-lg font-semibold mb-2">Filtri</h2>
-            <div className="grid gap-2">
-              <input placeholder="Cerca per nome o tag…" value={search} onChange={e=>setSearch(e.target.value)} className="px-2 py-1 bg-neutral-800 rounded" />
-              <select value={typeFilter} onChange={e=>setTypeFilter(e.target.value as any)} className="px-2 py-1 bg-neutral-800 rounded">
-                <option value="Tutti">Tutti i tipi</option>
-                {typeOptions.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-              <input placeholder="Filtro su un tag esatto" value={tagFilter} onChange={e=>setTagFilter(e.target.value)} className="px-2 py-1 bg-neutral-800 rounded" />
-              <div className="flex gap-2">
-                <button className="flex-1 px-3 py-1 rounded bg-neutral-700" onClick={doUndo}>↶ Undo</button>
-                <button className="flex-1 px-3 py-1 rounded bg-neutral-700" onClick={doRedo}>↷ Redo</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Colonna destra: lista */}
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {filtered.map(c => (
-            <div key={c.id} className="rounded-2xl border border-neutral-800 p-3 space-y-3 bg-neutral-900/40">
-              {/* Header card */}
-              <div className="flex items-center gap-2">
-                <span className="text-xl select-none">{c.icon || '🕒'}</span>
-                <input
-                  className="flex-1 min-w-0 bg-transparent font-semibold px-2 py-1 rounded hover:bg-neutral-800/50"
-                  value={c.name}
-                  onChange={e=> upsertClock({ id: c.id, name: e.target.value })}
-                />
-                <button onClick={()=>toggleVisible(c.id)} className="px-2 py-1 rounded hover:bg-neutral-800" title="Visibile sul display">
-                  {c.visible ? '👁️' : '🙈'}
-                </button>
-                <button onClick={()=>deleteClock(c.id)} className="px-2 py-1 rounded hover:bg-neutral-800" title="Elimina">✕</button>
-              </div>
-
-              {/* Core */}
-              <div className="grid grid-cols-[auto,1fr] gap-3 items-center">
-                <RingClock
-                  segments={c.segments}
-                  filled={c.filled}
-                  color={c.color}
-                  label={c.name}
-                  onClick={()=>applyDelta(c.id, +1)}
-                  onShiftClick={()=>applyDelta(c.id, -1)}
-                />
-                <div className="grid gap-2">
-                  <div className="grid grid-cols-2 gap-2">
-                    <label className="flex items-center gap-2">
-                      <span className="w-16 text-sm">Tipo</span>
-                      <select
-                        className="flex-1 px-2 py-1 bg-neutral-800 rounded"
-                        value={c.type}
-                        onChange={e=> upsertClock({ id: c.id, type: e.target.value as ClockType })}
-                      >
-                        {['Evento','Missione','Campagna','Corruzione','Legame','Personalizzato'].map(t => <option key={t} value={t}>{t}</option>)}
-                      </select>
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <span className="w-16 text-sm">Segmenti</span>
-                      <input
-                        type="number" min={2} value={c.segments}
-                        onChange={e=>{
-                          const seg = clamp(parseInt(e.target.value||'2'), 2, 48);
-                          upsertClock({ id: c.id, segments: seg, filled: Math.min(c.filled, seg) });
-                        }}
-                        className="w-24 px-2 py-1 bg-neutral-800 rounded"
-                      />
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <span className="w-16 text-sm">Colore</span>
-                      <input
-                        type="color" value={c.color || '#94a3b8'}
-                        onChange={e=> upsertClock({ id: c.id, color: e.target.value })}
-                        className="h-9 w-12 bg-neutral-800 rounded"
-                      />
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <span className="w-16 text-sm">Icona</span>
-                      <input
-                        value={c.icon || ''} placeholder="emoji"
-                        onChange={e=> upsertClock({ id: c.id, icon: e.target.value })}
-                        className="flex-1 px-2 py-1 bg-neutral-800 rounded"
-                      />
-                    </label>
-                  </div>
-
-                  <div className="grid grid-cols-[1fr_auto_auto_auto] gap-2 items-center">
-                    <input
-                      placeholder="Etichetta tick (Invio = +1)"
-                      className="px-2 py-1 bg-neutral-800 rounded"
-                      onKeyDown={(e)=>{
-                        if (e.key==='Enter'){
-                          const v=(e.target as HTMLInputElement).value.trim();
-                          if (v) { applyDelta(c.id, +1, v); (e.target as HTMLInputElement).value=''; }
-                        }
-                      }}
-                    />
-                    <button className="px-2 py-1 rounded bg-neutral-700" onClick={()=>applyDelta(c.id, +2)}>+2</button>
-                    <button className="px-2 py-1 rounded bg-neutral-700" onClick={()=>applyDelta(c.id, +3)}>+3</button>
-                    <button className="px-2 py-1 rounded bg-neutral-700" onClick={()=>applyDelta(c.id, -1)}>−1</button>
-                  </div>
+                <input placeholder="Filtro su un tag esatto" value={tagFilter} onChange={e=>setTagFilter(e.target.value)} className="px-2 py-1 bg-neutral-800 rounded min-w-0" />
+                <div className="flex gap-2 flex-wrap">
+                  <button className="flex-1 px-3 py-1 rounded bg-neutral-700 min-w-[120px]" onClick={doUndo}>↶ Undo</button>
+                  <button className="flex-1 px-3 py-1 rounded bg-neutral-700 min-w-[120px]" onClick={doRedo}>↷ Redo</button>
                 </div>
               </div>
+            </div>
+          </div>
 
-              {/* Metadati */}
-              <div className="grid gap-2">
-                <label className="flex items-center gap-2">
-                  <span className="w-16 text-sm">Tag</span>
+          {/* Colonna destra: lista */}
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {filtered.map(c => (
+              <div key={c.id} className="rounded-2xl border border-neutral-800 p-3 space-y-3 bg-neutral-900/40 overflow-visible">
+                {/* Header card */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xl select-none">{c.icon || '🕒'}</span>
                   <input
-                    value={(c.tags||[]).join(' ')}
-                    onChange={e=> upsertClock({ id: c.id, tags: e.target.value.split(' ').filter(Boolean) })}
-                    placeholder="separati da spazio"
-                    className="flex-1 px-2 py-1 bg-neutral-800 rounded"
+                    className="flex-1 min-w-0 bg-transparent font-semibold px-2 py-1 rounded hover:bg-neutral-800/50"
+                    value={c.name}
+                    onChange={e=> upsertClock({ id: c.id, name: e.target.value })}
                   />
-                </label>
-                <label className="flex items-center gap-2">
-                  <span className="w-16 text-sm">Note</span>
-                  <input
-                    value={c.notes || ''}
-                    onChange={e=> upsertClock({ id: c.id, notes: e.target.value })}
-                    placeholder="markdown breve"
-                    className="flex-1 px-2 py-1 bg-neutral-800 rounded"
-                  />
-                </label>
-                <label className="flex items-center gap-2">
-                  <span className="w-16 text-sm">onComplete</span>
-                  <input
-                    value={c.onComplete || ''}
-                    onChange={e=> upsertClock({ id: c.id, onComplete: e.target.value })}
-                    placeholder="conseguenza al completamento"
-                    className="flex-1 px-2 py-1 bg-neutral-800 rounded"
-                  />
-                </label>
+                  <button onClick={()=>toggleVisible(c.id)} className="px-2 py-1 rounded hover:bg-neutral-800" title="Visibile sul display">
+                    {c.visible ? '👁️' : '🙈'}
+                  </button>
+                  <button onClick={()=>deleteClock(c.id)} className="px-2 py-1 rounded hover:bg-neutral-800" title="Elimina">✕</button>
+                </div>
+
+                {/* Core: mobile a colonna, da md affiancati */}
+                <div className="grid gap-3 items-start md:grid-cols-[auto,1fr]">
+                  <div className="justify-self-center md:justify-self-start">
+                    <RingClock
+                      segments={c.segments}
+                      filled={c.filled}
+                      color={c.color}
+                      label={c.name}
+                      onClick={()=>applyDelta(c.id, +1)}
+                      onShiftClick={()=>applyDelta(c.id, -1)}
+                    />
+                  </div>
+                  <div className="grid gap-2 min-w-0">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <label className="flex items-center gap-2 min-w-0">
+                        <span className="w-16 text-sm shrink-0">Tipo</span>
+                        <select
+                          className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0"
+                          value={c.type}
+                          onChange={e=> upsertClock({ id: c.id, type: e.target.value as ClockType })}
+                        >
+                          {['Evento','Missione','Campagna','Corruzione','Legame','Personalizzato'].map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                      </label>
+                      <label className="flex items-center gap-2 min-w-0">
+                        <span className="w-20 text-sm shrink-0">Segmenti</span>
+                        <input
+                          type="number" min={2} value={c.segments}
+                          onChange={e=>{
+                            const seg = clamp(parseInt(e.target.value||'2'), 2, 48);
+                            upsertClock({ id: c.id, segments: seg, filled: Math.min(c.filled, seg) });
+                          }}
+                          className="w-[120px] px-2 py-1 bg-neutral-800 rounded"
+                        />
+                      </label>
+                      <label className="flex items-center gap-2 min-w-0">
+                        <span className="w-16 text-sm shrink-0">Colore</span>
+                        <input
+                          type="color" value={c.color || '#94a3b8'}
+                          onChange={e=> upsertClock({ id: c.id, color: e.target.value })}
+                          className="h-9 w-12 bg-neutral-800 rounded"
+                        />
+                      </label>
+                      <label className="flex items-center gap-2 min-w-0">
+                        <span className="w-16 text-sm shrink-0">Icona</span>
+                        <input
+                          value={c.icon || ''} placeholder="emoji"
+                          onChange={e=> upsertClock({ id: c.id, icon: e.target.value })}
+                          className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="grid grid-cols-[1fr_auto_auto_auto] gap-2 items-center">
+                      <input
+                        placeholder="Etichetta tick (Invio = +1)"
+                        className="px-2 py-1 bg-neutral-800 rounded min-w-0"
+                        onKeyDown={(e)=>{
+                          if (e.key==='Enter'){
+                            const v=(e.target as HTMLInputElement).value.trim();
+                            if (v) { applyDelta(c.id, +1, v); (e.target as HTMLInputElement).value=''; }
+                          }
+                        }}
+                      />
+                      <button className="px-2 py-1 rounded bg-neutral-700" onClick={()=>applyDelta(c.id, +2)}>+2</button>
+                      <button className="px-2 py-1 rounded bg-neutral-700" onClick={()=>applyDelta(c.id, +3)}>+3</button>
+                      <button className="px-2 py-1 rounded bg-neutral-700" onClick={()=>applyDelta(c.id, -1)}>−1</button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Metadati */}
+                <div className="grid gap-2">
+                  <label className="flex items-center gap-2 min-w-0">
+                    <span className="w-16 text-sm shrink-0">Tag</span>
+                    <input
+                      value={(c.tags||[]).join(' ')}
+                      onChange={e=> upsertClock({ id: c.id, tags: e.target.value.split(' ').filter(Boolean) })}
+                      placeholder="separati da spazio"
+                      className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0"
+                    />
+                  </label>
+                  <label className="flex items-center gap-2 min-w-0">
+                    <span className="w-16 text-sm shrink-0">Note</span>
+                    <input
+                      value={c.notes || ''}
+                      onChange={e=> upsertClock({ id: c.id, notes: e.target.value })}
+                      placeholder="markdown breve"
+                      className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0"
+                    />
+                  </label>
+                  <label className="flex items-center gap-2 min-w-0">
+                    <span className="w-24 text-sm shrink-0">onComplete</span>
+                    <input
+                      value={c.onComplete || ''}
+                      onChange={e=> upsertClock({ id: c.id, onComplete: e.target.value })}
+                      placeholder="conseguenza al completamento"
+                      className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0"
+                    />
+                  </label>
+                </div>
+
+                {/* Concat editor */}
+                <ConcatEditor clock={c} allClocks={clocks} onChange={(r)=> upsertClock({ id: c.id, concat: r })} />
               </div>
+            ))}
 
-              {/* Concat editor */}
-              <ConcatEditor clock={c} allClocks={clocks} onChange={(r)=> upsertClock({ id: c.id, concat: r })} />
-            </div>
-          ))}
-
-          {filtered.length === 0 && (
-            <div className="text-sm opacity-70 p-6 border border-neutral-800 rounded-2xl">
-              Nessun clock corrisponde ai filtri. Crea un nuovo clock o azzera i filtri.
-            </div>
-          )}
+            {filtered.length === 0 && (
+              <div className="text-sm opacity-70 p-6 border border-neutral-800 rounded-2xl">
+                Nessun clock corrisponde ai filtri. Crea un nuovo clock o azzera i filtri.
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -679,50 +730,50 @@ function ConcatEditor({
 
   return (
     <div className="rounded-xl border border-neutral-800 p-2">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="font-semibold">Concatenazioni</div>
         <button className="px-2 py-1 rounded bg-neutral-800" onClick={addRule}>+ Regola</button>
       </div>
       {rules.length === 0 && <div className="text-sm opacity-70 mt-2">Nessuna regola.</div>}
       <div className="mt-2 grid gap-3">
         {rules.map((r, i)=>(
-          <div key={i} className="grid md:grid-cols-2 xl:grid-cols-4 gap-2 items-start p-2 rounded bg-neutral-900/60">
-            <label className="flex items-center gap-2">
-              <span className="w-20 text-sm">Relation</span>
-              <select value={r.relation} onChange={e=>updateRule(i, { relation: e.target.value as ConcatRelation })} className="flex-1 px-2 py-1 bg-neutral-800 rounded">
+          <div key={i} className="grid md:grid-cols-2 xl:grid-cols-4 gap-2 items-start p-2 rounded bg-neutral-900/60 overflow-visible">
+            <label className="flex items-center gap-2 min-w-0">
+              <span className="w-20 text-sm shrink-0">Relation</span>
+              <select value={r.relation} onChange={e=>updateRule(i, { relation: e.target.value as ConcatRelation })} className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0">
                 <option value="after">after</option>
                 <option value="parallel">parallel</option>
                 <option value="gate">gate</option>
                 <option value="mirror">mirror</option>
               </select>
             </label>
-            <label className="flex items-center gap-2">
-              <span className="w-20 text-sm">On</span>
-              <select value={r.on} onChange={e=>updateRule(i, { on: e.target.value as ConcatOn })} className="flex-1 px-2 py-1 bg-neutral-800 rounded">
+            <label className="flex items-center gap-2 min-w-0">
+              <span className="w-20 text-sm shrink-0">On</span>
+              <select value={r.on} onChange={e=>updateRule(i, { on: e.target.value as ConcatOn })} className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0">
                 <option value="advance">advance</option>
                 <option value="complete">complete</option>
                 <option value="regress">regress</option>
               </select>
             </label>
-            <label className="flex items-center gap-2">
-              <span className="w-20 text-sm">Ratio</span>
+            <label className="flex items-center gap-2 min-w-0">
+              <span className="w-20 text-sm shrink-0">Ratio</span>
               <input type="number" step="0.25" value={r.ratio ?? 1} onChange={e=>updateRule(i, { ratio: parseFloat(e.target.value||'1') })} className="w-24 px-2 py-1 bg-neutral-800 rounded" />
             </label>
-            <label className="flex items-center gap-2">
-              <span className="w-24 text-sm">minStep</span>
+            <label className="flex items-center gap-2 min-w-0">
+              <span className="w-24 text-sm shrink-0">minStep</span>
               <input type="number" min={0} value={r.minStep ?? 1} onChange={e=>updateRule(i, { minStep: parseInt(e.target.value||'0') })} className="w-24 px-2 py-1 bg-neutral-800 rounded" />
             </label>
-            <label className="flex items-center gap-2">
-              <span className="w-24 text-sm">Carry</span>
-              <select value={r.carryMode ?? 'clamp'} onChange={e=>updateRule(i, { carryMode: e.target.value as CarryMode })} className="flex-1 px-2 py-1 bg-neutral-800 rounded">
+            <label className="flex items-center gap-2 min-w-0">
+              <span className="w-24 text-sm shrink-0">Carry</span>
+              <select value={r.carryMode ?? 'clamp'} onChange={e=>updateRule(i, { carryMode: e.target.value as CarryMode })} className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0">
                 <option value="clamp">clamp</option>
                 <option value="none">none</option>
                 <option value="overflow">overflow</option>
               </select>
             </label>
-            <label className="flex items-center gap-2">
-              <span className="w-24 text-sm">Visibilità</span>
-              <select value={r.visibility ?? 'noChange'} onChange={e=>updateRule(i, { visibility: e.target.value as VisibilityPropagation })} className="flex-1 px-2 py-1 bg-neutral-800 rounded">
+            <label className="flex items-center gap-2 min-w-0">
+              <span className="w-24 text-sm shrink-0">Visibilità</span>
+              <select value={r.visibility ?? 'noChange'} onChange={e=>updateRule(i, { visibility: e.target.value as VisibilityPropagation })} className="flex-1 px-2 py-1 bg-neutral-800 rounded min-w-0">
                 <option value="noChange">noChange</option>
                 <option value="inherit">inherit</option>
                 <option value="forceVisible">forceVisible</option>
