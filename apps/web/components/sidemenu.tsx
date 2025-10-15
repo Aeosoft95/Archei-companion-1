@@ -23,6 +23,7 @@ export default function SideMenu({ open, onClose }: { open: boolean; onClose: ()
     { href: '/display-online', label: 'Display Online' },
   ];
   const gm = [
+    { href: '/rooms', label: 'Stanze & Inviti' },   // ⬅️ nuovo
     { href: '/tools/chat', label: 'Chat & Dadi (GM)' },
     { href: '/display', label: 'Display Locale' },
   ];
