@@ -2,11 +2,15 @@
   "name": "@archei/realtime-server",
   "version": "0.1.0",
   "type": "module",
+  }
+  {
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p .",
     "start": "node dist/index.js"
-  },
+  }
+}
+
   "dependencies": {
     "ws": "^8.18.0",
     "@archei/shared": "workspace:*"
