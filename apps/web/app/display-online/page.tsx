@@ -68,16 +68,16 @@ export default function DisplayOnline({ searchParams } : any){
   },[ws, room, pin]);
 
   return (
-    <div className="grid gap-4">
-      <div className="card min-h-8 text-sm opacity-80">
+    <div className="grid gap-6">
+      <div className="card minh-8 text-sm opacity-80">
         WS: {status} → {wsUrl} (room: {room})
       </div>
-      <div className="card min-h-32" style={{background: scene.color||'#111'}}>
+      <div className="card minh-32" style={{background: scene.color||'#111'}}>
         <h1 className="text-3xl font-black">{scene.title||'—'}</h1>
         {scene.image && <img src={scene.image} alt="scene" className="mt-2 max-h-72 rounded-xl"/>}
       </div>
-      <div className="card min-h-24"><p className="text-2xl">{banner}</p></div>
-      <div className="card min-h-24"><p className="text-2xl">{time!==undefined? `${time}s`:'—'}</p></div>
+      <div className="card minh-24"><p className="text-2xl">{banner}</p></div>
+      <div className="card minh-24"><p className="text-2xl">{time!==undefined? `${time}s`:'—'}</p></div>
     </div>
   );
 }

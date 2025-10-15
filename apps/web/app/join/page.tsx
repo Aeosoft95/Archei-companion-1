@@ -27,17 +27,16 @@ export default function JoinPage(){
       else if (msg.t === 'room-setup') push(`🔐 Stanza configurata (PIN ${msg.withPin?'attivo':'non impostato'})`);
       else if (msg.t === 'presence') push(`👥 Utenti: ${(msg.nicks||[]).join(', ')}`);
       else if (msg.t === 'error') push(`⚠️ ${msg.error}`);
-      else push(JSON.stringify(msg));
     };
     ws.onerror = ()=> push('⚠️ errore connessione');
     ws.onclose  = ()=> push('ℹ️ connessione chiusa');
   }
 
   return (
-    <div className="grid gap-4">
+    <div className="grid gap-6">
       <div className="card">
-        <h1 className="text-xl font-bold mb-2">Join stanza</h1>
-        <div className="grid md:grid-cols-2 gap-2">
+        <h1 className="text-xl font-bold mb-3">Join stanza</h1>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           <label className="flex gap-2 items-center">WS
             <input className="flex-1 px-2 py-1 bg-neutral-800 rounded" value={wsUrl} onChange={e=>setWsUrl(e.target.value)} />
           </label>
@@ -48,7 +47,7 @@ export default function JoinPage(){
             <input className="px-2 py-1 bg-neutral-800 rounded" value={nick} onChange={e=>setNick(e.target.value)} />
           </label>
           <label className="flex gap-2 items-center">PIN
-            <input className="px-2 py-1 bg-neutral-800 rounded" value={pin} onChange={e=>setPin(e.target.value)} placeholder="(opzionale)" />
+            <input className="px-2 py-1 bg-neutral-800 rounded" value={pin} onChange={e=>setPin(e.target.value)} placeholder="(opz.)" />
           </label>
           <label className="flex gap-2 items-center">Ruolo
             <select className="px-2 py-1 bg-neutral-800 rounded" value={role} onChange={e=>setRole(e.target.value as any)}>
@@ -64,8 +63,8 @@ export default function JoinPage(){
       </div>
 
       <div className="card">
-        <h2 className="text-lg font-bold mb-2">Log</h2>
-        <div className="h-64 overflow-auto text-sm space-y-1">
+        <h2 className="text-lg font-bold mb-3">Log</h2>
+        <div className="minh-48 overflow-auto text-sm space-y-1">
           {log.map((l,i)=>(<div key={i}>{l}</div>))}
         </div>
       </div>
