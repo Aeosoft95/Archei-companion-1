@@ -1,3 +1,4 @@
+
 'use client';
 /**
  * ARCHEI — CLOCKS (GM) — WS mirror auto-on + concat semplici + layout fluido
