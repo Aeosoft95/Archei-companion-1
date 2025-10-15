@@ -2,11 +2,7 @@
   "name": "archei-companion-monorepo",
   "private": true,
   "packageManager": "pnpm@10.18.3",
-  "engines": {
-    "node": ">=20.18.0 <21"
-  },
   "scripts": {
-    "install:all": "pnpm -w install",
     "dev:web": "pnpm --filter @archei/web dev",
     "build:web": "pnpm --filter @archei/web build",
     "dev:ws": "pnpm --filter @archei/realtime-server dev",
@@ -16,8 +12,5 @@
   "workspaces": [
     "apps/*",
     "packages/*"
-  ],
-  "devDependencies": {
-    "typescript": "5.6.3"
-  }
+  ]
 }
