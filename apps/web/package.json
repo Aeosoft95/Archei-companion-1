@@ -1,25 +1,21 @@
 {
-  "name": "@archei/web",
-  "version": "0.1.0",
+  "name": "archei-companion-monorepo",
   "private": true,
-  "type": "module",
+  "packageManager": "pnpm@10.18.3",
+  "engines": {
+    "node": ">=20.18.0 <21"
+  },
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
+    "install:all": "pnpm -w install",
+    "dev": "echo \"Usa: pnpm dev:web | pnpm dev:ws\"",
+    "dev:web": "pnpm --filter @archei/web dev",
+    "build:web": "pnpm --filter @archei/web build",
+    "dev:ws": "pnpm --filter @archei/realtime-server dev",
+    "build:ws": "pnpm --filter @archei/realtime-server build",
+    "start:ws": "pnpm --filter @archei/realtime-server start"
   },
-  "dependencies": {
-    "@archei/shared": "workspace:*",
-    "next": "14.2.5",
-    "react": "18.3.1",
-    "react-dom": "18.3.1"
-  },
-  "devDependencies": {
-    "@types/node": "^20.12.12",
-    "@types/react": "19.2.2",
-    "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.47",
-    "tailwindcss": "^3.4.12",
-    "typescript": "5.6.3"
-  }
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
 }

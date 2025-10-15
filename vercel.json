@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "framework": "nextjs",
+  "rootDirectory": "apps/web",
+  "buildCommand": "pnpm --filter @archei/web build",
+  "installCommand": "corepack enable && corepack prepare pnpm@10.18.3 --activate && pnpm -w install --frozen-lockfile",
+  "outputDirectory": ".next"
+}
