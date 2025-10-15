@@ -1,193 +1,144 @@
 'use client';
-/**
- * ARCHEI — DISPLAY ONLINE (WS)
- * - Legge da WebSocket: ?ws=wss://...&room=PIN
- * - Eventi accettati:
- *   - DISPLAY_CLOCKS_STATE { clocks }
- *   - DISPLAY_HIGHLIGHT { clockId, type }
- *   (con o senza { room } nel payload: se presente, filtra per room)
- */
+import { useEffect, useRef, useState } from 'react';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+type Clock = { id:string; name:string; segments:number; filled:number; visible:boolean; color?:string; icon?:string };
+type SceneState = { title?: string; color?: string; image?: string; visible?: boolean };
+type CountdownState = { running: boolean; totalMs: number; remainMs: number; label?: string; startedAt?: number };
 
-type Clock = {
-  id: string;
-  name: string;
-  segments: number;
-  filled: number;
-  visible: boolean;
-  color?: string;
-  icon?: string;
-};
+const ENV_WS = process.env.NEXT_PUBLIC_WS_DEFAULT || '';
+const ENV_ROOM = process.env.NEXT_PUBLIC_ROOM_DEFAULT || 'demo';
 
-type WsEv =
-  | ({ room?: string } & { t: 'DISPLAY_CLOCKS_STATE'; clocks: Clock[] })
-  | ({ room?: string } & { t: 'DISPLAY_HIGHLIGHT'; clockId: string; type: 'advance' | 'complete' })
-  | Record<string, unknown>;
-
-const clamp = (v:number, lo:number, hi:number)=>Math.max(lo, Math.min(hi, v));
-const validate = (c: Clock): Clock => {
-  const segments = clamp(Math.floor(c.segments), 2, 48);
-  const filled = clamp(Math.floor(c.filled), 0, segments);
-  return { ...c, segments, filled };
-};
-
-function RingClock({ segments, filled, color, label, highlight }: {
-  segments:number; filled:number; color?:string; label?:string; highlight?: 'advance'|'complete'|null;
-}) {
-  const size = 160, r = 58, stroke = 12;
-  const cx = size/2, cy = size/2;
-  const full = 360;
-  const gap = Math.max(2, 14 / Math.max(segments, 4));
-  const per = full / segments;
-  const span = Math.max(6, per - gap);
-
-  const arcs: { s:number; e:number; on:boolean }[] = [];
-  let start = -90;
-  for (let i=0;i<segments;i++){
-    const s = start + gap/2;
-    const e = s + span;
-    arcs.push({ s, e, on: i < filled });
-    start += per;
-  }
-  const polar = (a:number) => {
-    const rad = a*Math.PI/180;
-    return [cx + r*Math.cos(rad), cy + r*Math.sin(rad)];
-  };
-
-  return (
-    <svg width={size} height={size} className={`block ${highlight ? (highlight==='complete' ? 'animate-[pulse_1.2s_ease-out]' : 'animate-[ping_0.9s_ease-out]') : ''}`}>
-      <circle cx={cx} cy={cy} r={r} fill="none" stroke="#2a2a2a" strokeWidth={stroke} />
-      {arcs.map((a,i)=>{
-        const [x1,y1] = polar(a.s), [x2,y2] = polar(a.e);
-        const largeArc = (a.e-a.s)>180 ? 1 : 0;
-        return (
-          <path
-            key={i}
-            d={`M ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2}`}
-            stroke={a.on ? (color||'#7dd3fc') : '#3a3a3a'}
-            strokeWidth={stroke}
-            fill="none"
-            strokeLinecap="round"
-          />
-        );
-      })}
-      <text x={cx} y={cy+7} textAnchor="middle" className="fill-neutral-100" style={{ fontSize: 20, fontWeight: 800 }}>
-        {filled}/{segments}
-      </text>
-      {label && (
-        <text x={cx} y={size-8} textAnchor="middle" className="fill-neutral-300" style={{ fontSize: 14, fontWeight: 600 }}>
-          {label}
-        </text>
-      )}
-    </svg>
-  );
-}
-
-export default function DisplayOnline(){
-  const search = useSearchParams();
-  const wsParam = search.get('ws') || process.env.NEXT_PUBLIC_WS_DEFAULT || '';
-  const room = search.get('room') || 'demo';
+export default function DisplayOnline() {
+  const [wsUrl, setWsUrl] = useState<string>('');
+  const [room, setRoom] = useState<string>(ENV_ROOM);
+  const wsRef = useRef<WebSocket|null>(null);
 
   const [clocks, setClocks] = useState<Clock[]>([]);
-  const [highlightId, setHighlightId] = useState<string|null>(null);
-  const [highlightType, setHighlightType] = useState<'advance'|'complete'|null>(null);
-  const [status, setStatus] = useState<'idle'|'connecting'|'open'|'closed'|'error'>('idle');
-  const clearTimer = useRef<ReturnType<typeof setTimeout>|null>(null);
-  const wsRef = useRef<WebSocket|null>(null);
-  const urlValid = useMemo(()=> wsParam.startsWith('ws://') || wsParam.startsWith('wss://'), [wsParam]);
+  const [scene, setScene] = useState<SceneState>({ title:'', color:'#000000', image:'', visible:false });
+  const [countdown, setCountdown] = useState<CountdownState>({ running:false, totalMs:0, remainMs:0, label:'' });
+  const [banner, setBanner] = useState<string>('');
+
+  // parse query: ws, room
+  useEffect(()=>{
+    const search = new URLSearchParams(window.location.search);
+    const qWs = search.get('ws') || ENV_WS;
+    const qRoom = search.get('room') || ENV_ROOM;
+    setWsUrl(qWs);
+    setRoom(qRoom);
+  }, []);
 
   useEffect(()=>{
-    if (!urlValid) { setStatus('error'); return; }
-    setStatus('connecting');
-    let active = true;
-    let attempt = 0;
+    if (!wsUrl || !(wsUrl.startsWith('ws://') || wsUrl.startsWith('wss://'))) return;
+    const url = wsUrl + (wsUrl.includes('?')?'&':'?') + 'room=' + encodeURIComponent(room);
+    const ws = new WebSocket(url);
+    wsRef.current = ws;
 
-    const connect = ()=>{
+    ws.onopen = ()=>{};
+    ws.onclose = ()=>{};
+    ws.onerror = ()=>{};
+
+    ws.onmessage = (ev)=>{
       try {
-        const ws = new WebSocket(wsParam);
-        wsRef.current = ws;
-
-        ws.onopen = ()=>{ if (!active) return; setStatus('open'); attempt = 0; };
-
-        ws.onmessage = (me)=>{
-          try {
-            const data = JSON.parse(me.data as string) as WsEv;
-            // filtra per room se presente
-            // (accetta payload senza room per retro-compat)
-            if (typeof data !== 'object' || data === null) return;
-            const hasRoom = 'room' in (data as any);
-            if (hasRoom && (data as any).room !== room) return;
-
-            if ((data as any).t === 'DISPLAY_CLOCKS_STATE') {
-              const list = (data as any).clocks as Clock[] | undefined;
-              if (Array.isArray(list)) setClocks(list.filter(c=>c.visible).map(validate));
-            } else if ((data as any).t === 'DISPLAY_HIGHLIGHT') {
-              const cid = (data as any).clockId as string;
-              const type = (data as any).type as 'advance'|'complete';
-              setHighlightId(cid); setHighlightType(type);
-              if (clearTimer.current) clearTimeout(clearTimer.current);
-              clearTimer.current = setTimeout(()=>{ setHighlightId(null); setHighlightType(null); }, 1100);
-            }
-          } catch {}
-        };
-
-        ws.onclose = ()=>{
-          if (!active) return;
-          setStatus('closed');
-          const delay = Math.min(1000 * (2 ** attempt++), 10000);
-          setTimeout(connect, delay);
-        };
-
-        ws.onerror = ()=>{
-          setStatus('error');
-          try { ws.close(); } catch {}
-        };
-      } catch {
-        const delay = Math.min(1000 * (2 ** attempt++), 10000);
-        setTimeout(connect, delay);
-      }
+        const data = JSON.parse(ev.data);
+        switch (data.t) {
+          case 'DISPLAY_CLOCKS_STATE': {
+            const onlyVisible = (data.clocks as Clock[]).filter(c=>c.visible);
+            setClocks(onlyVisible);
+            break;
+          }
+          case 'DISPLAY_HIGHLIGHT': {
+            // opzionale: splash effettino
+            break;
+          }
+          case 'DISPLAY_SCENE_STATE': {
+            setScene(data.scene || {});
+            break;
+          }
+          case 'DISPLAY_BANNER': {
+            setBanner(String(data.text||''));
+            // auto-hide banner dopo 4s
+            setTimeout(()=> setBanner(''), 4000);
+            break;
+          }
+          case 'DISPLAY_COUNTDOWN': {
+            setCountdown(data.countdown || { running:false, totalMs:0, remainMs:0, label:'' });
+            break;
+          }
+        }
+      } catch {}
     };
 
-    connect();
-    return ()=>{
-      active = false;
-      if (clearTimer.current) clearTimeout(clearTimer.current);
-      try { wsRef.current?.close(); } catch {}
-    };
-  }, [wsParam, room, urlValid]);
+    return ()=> { try { ws.close(); } catch {} };
+  }, [wsUrl, room]);
+
+  // render progress per clock
+  const Arc = ({filled, segments, color='#60a5fa'}:{filled:number; segments:number; color?:string})=>{
+    const pct = segments>0 ? filled/segments : 0;
+    return (
+      <div className="h-24 w-24 rounded-full bg-neutral-800 grid place-items-center relative">
+        <svg className="absolute inset-0 -rotate-90" viewBox="0 0 36 36">
+          <circle cx="18" cy="18" r="15.5" fill="none" stroke="#262626" strokeWidth="5"/>
+          <circle cx="18" cy="18" r="15.5" fill="none" stroke={color} strokeWidth="5" strokeDasharray={`${pct*100},100`} />
+        </svg>
+        <div className="relative text-lg font-bold">{filled}/{segments}</div>
+      </div>
+    );
+  };
+
+  // countdown live (se arriva solo lo stato, mostriamo il numero ricevuto)
+  const remainSec = Math.max(0, Math.round((countdown.remainMs || 0)/100)/10);
 
   return (
-    <div className="min-h-screen">
-      <div className="max-w-6xl mx-auto px-4 lg:px-6 py-6">
-        <div className="flex items-center justify-between gap-3 mb-4">
-          <h1 className="text-xl font-bold">Display Online</h1>
-          <div className="text-xs px-2 py-1 rounded bg-neutral-800 border border-neutral-700">
-            {urlValid ? (status==='open' ? '🟢 Connesso' : status==='connecting' ? '🟡 Connessione…' : '🔴 Disconnesso') : '⚠️ URL WS non valido'}
-          </div>
-        </div>
+    <div className="min-h-screen relative overflow-hidden">
+      {/* Background scene */}
+      <div
+        className="absolute inset-0 bg-center bg-cover"
+        style={{
+          background: scene.image ? undefined : (scene.color || '#000000'),
+          backgroundImage: scene.image ? `url(${scene.image})` : undefined,
+          opacity: scene.visible ? 1 : 0,
+          transition: 'opacity .3s ease'
+        }}
+      />
+      <div className="relative z-10 p-6">
+        {/* Scene title */}
+        {scene.visible && !!scene.title && (
+          <div className="text-center text-3xl font-bold drop-shadow-lg mb-4">{scene.title}</div>
+        )}
 
-        <section className="grid gap-6 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]">
+        {/* Clocks grid (solo visibili) */}
+        <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(220px,1fr))]">
           {clocks.map(c=>(
-            <div key={c.id} className="rounded-2xl border border-neutral-800 p-3 bg-neutral-900/40 flex flex-col items-center">
-              <div className="text-lg font-semibold mb-1">{c.icon || '🕒'} {c.name}</div>
-              <RingClock
-                segments={c.segments}
-                filled={c.filled}
-                color={c.color}
-                label=""
-                highlight={highlightId===c.id ? (highlightType||'advance') : null}
-              />
+            <div key={c.id} className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xl">{c.icon ?? '⏰'}</span>
+                <div className="font-semibold">{c.name}</div>
+              </div>
+              <div className="flex items-center gap-4">
+                <Arc filled={c.filled} segments={c.segments} color={c.color || '#60a5fa'} />
+                <div className="opacity-80">{c.filled}/{c.segments}</div>
+              </div>
             </div>
           ))}
-          {clocks.length===0 && (
-            <div className="opacity-70 text-sm p-6 border border-neutral-800 rounded-2xl">
-              Nessun clock visibile. Assicurati che il GM stia inviando lo stato sul WS (mirror) e che i clock siano 👁️ visibili.
-            </div>
-          )}
-        </section>
+        </div>
       </div>
+
+      {/* Banner */}
+      {banner && (
+        <div className="absolute left-1/2 -translate-x-1/2 top-6 z-20">
+          <div className="px-6 py-3 rounded-full bg-neutral-100 text-neutral-900 font-bold shadow-xl">{banner}</div>
+        </div>
+      )}
+
+      {/* Countdown overlay */}
+      {countdown.running && (
+        <div className="absolute inset-0 bg-black/60 grid place-items-center z-30">
+          <div className="text-center">
+            <div className="text-4xl font-bold mb-3">{countdown.label || 'Countdown'}</div>
+            <div className="text-7xl font-black tabular-nums">{remainSec.toFixed(1)}s</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
